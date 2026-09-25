@@ -1,0 +1,26 @@
+{
+  "name": "ai-room-windows",
+  "version": "1.0.0",
+  "description": "A pixel-art office for your Claude Code sessions on Windows. Every project is a room, every session is a robot at a desk.",
+  "private": true,
+  "license": "MIT",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js --open",
+    "background": "node server.js --background --open",
+    "icon": "node tools/make-icon.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "os": [
+    "win32"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "pixel-art",
+    "dashboard",
+    "windows"
+  ]
+}

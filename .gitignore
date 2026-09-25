@@ -1,0 +1,15 @@
+# Dependencies (none needed, but just in case)
+node_modules/
+
+# Logs and temp files
+*.log
+*.tmp
+
+# OS clutter
+Thumbs.db
+desktop.ini
+.DS_Store
+
+# Editor folders
+.vscode/
+.idea/

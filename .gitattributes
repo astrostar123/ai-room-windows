@@ -1,0 +1,7 @@
+# Normal text files use LF; Windows batch files need CRLF to run reliably
+* text=auto eol=lf
+*.bat text eol=crlf
+
+# Images are binary
+*.png binary
+*.ico binary

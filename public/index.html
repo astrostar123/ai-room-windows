@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Room</title>
+  <link rel="icon" id="favicon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <canvas id="brand-bot" width="30" height="24" aria-hidden="true"></canvas>
+      <span>AI&nbsp;ROOM</span>
+    </div>
+    <nav class="fleet" id="fleet" aria-label="Robots by state"></nav>
+    <div class="top-actions">
+      <button class="btn" id="btn-new">+ New robot</button>
+      <button class="btn ghost" id="btn-seen" title="Turn every amber robot back to idle">All seen</button>
+      <button class="btn ghost icon" id="btn-settings" title="Settings" aria-label="Settings">&#9881;</button>
+    </div>
+  </header>
+
+  <div id="banners"></div>
+
+  <main id="floor" aria-label="Rooms"></main>
+
+  <div id="empty" class="empty" hidden>
+    <canvas id="empty-bot" width="15" height="22" aria-hidden="true"></canvas>
+    <h2>The office is empty</h2>
+    <p>No Claude Code sessions in the last <span id="empty-hours">12</span> hours.<br>
+       Start one in the Claude app or a terminal and a robot will walk in.</p>
+    <button class="btn primary" id="btn-new-empty">+ New robot</button>
+  </div>
+
+  <aside id="panel" hidden aria-label="Conversation">
+    <header class="panel-head">
+      <canvas id="p-bot" width="15" height="22" aria-hidden="true"></canvas>
+      <div class="panel-id">
+        <div class="panel-name"><span id="p-name"></span><span class="pill" id="p-state"></span></div>
+        <div class="panel-title" id="p-title"></div>
+        <div class="panel-meta" id="p-meta"></div>
+      </div>
+      <button class="btn ghost icon" id="p-close" aria-label="Close panel" title="Close (Esc)">&#10005;</button>
+    </header>
+    <div class="panel-detail" id="p-detail"></div>
+    <div id="p-perm"></div>
+    <div class="messages" id="p-messages"></div>
+    <footer class="panel-foot">
+      <div class="reply-note" id="p-note"></div>
+      <textarea id="p-reply" rows="3" placeholder="Reply to this robot…  (Ctrl+Enter sends)"></textarea>
+      <div class="panel-actions">
+        <button class="btn primary" id="p-send">Send</button>
+        <button class="btn danger" id="p-stop">Stop</button>
+        <span class="spacer"></span>
+        <button class="btn ghost" id="p-term" title="Continue this conversation in Windows Terminal">Open in Terminal</button>
+      </div>
+    </footer>
+  </aside>
+
+  <div id="modal-back" class="modal-back" hidden>
+    <div class="modal" id="modal" role="dialog" aria-modal="true"></div>
+  </div>
+
+  <div id="tip" class="tip" hidden></div>
+  <div id="toast" class="toast" hidden></div>
+
+  <script>window.ROOM_TOKEN = "__ROOM_TOKEN__";</script>
+  <script src="/sprites.js"></script>
+  <script src="/room.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
