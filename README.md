@@ -9,9 +9,6 @@ at a glance which one is waiting on you.
 Everything runs on your own PC. The server only listens on `127.0.0.1`, and
 nothing is sent anywhere.
 
-> An unofficial Windows project inspired by [AI Room](https://airoom.dev/) for
-> macOS. It isn't affiliated with that app or with Anthropic.
-
 ## What you need
 
 - Windows 10 or 11
