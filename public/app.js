@@ -7,8 +7,13 @@
   const CLIENT_ID = Math.random().toString(36).slice(2, 10);
   const PARAMS = new URLSearchParams(location.search);
   const DEMO = PARAMS.has('demo'); // ?demo shows a pretend office (see the bottom of this file)
+
+  // Words that differ between Windows and Mac
+  const IS_MAC = /Mac/i.test(navigator.platform || '') || /Mac OS X/.test(navigator.userAgent);
+  const WORDS = IS_MAC
+    ? { terminal: 'Terminal', bin: 'Trash', start: 'Start AI Room.command', notify: 'Mac notifications', send: '⌘+Enter', folder: '/Users/you/my-project' }
+    : { terminal: 'Windows Terminal', bin: 'Recycle Bin', start: 'Start AI Room.bat', notify: 'Windows notifications', send: 'Ctrl+Enter', folder: 'C:\\Users\\you\\my-project' };
   const { STATE_COLORS, spriteCanvas, robotPalette, drawRobot } = window.Sprites;
-  const { H } = window.RoomLayout;
 
   const LABELS = { working: 'Working', waiting: 'Your turn', blocked: 'Blocked', idle: 'Idle' };
   const ORDER = ['blocked', 'waiting', 'working', 'idle'];
@@ -85,6 +90,7 @@
     api('/api/presence', { clientId: CLIENT_ID, visible: !document.hidden }).catch(() => {});
   }
   document.addEventListener('visibilitychange', sendPresence);
+  $('#p-reply').placeholder = `Reply to this robot…  (${WORDS.send} sends)`;
 
   let buildId = null;
   function onState(s) {
@@ -175,7 +181,7 @@
   function renderBanners(s) {
     const out = [];
     if (offline) {
-      out.push(`<div class="banner bad"><span class="grow"><b>AI Room has stopped.</b> Start it again with <code>Start AI Room.bat</code>. It reconnects by itself.</span></div>`);
+      out.push(`<div class="banner bad"><span class="grow"><b>AI Room has stopped.</b> Start it again with <code>${WORDS.start}</code>. It reconnects by itself.</span></div>`);
     }
     if (hooksJustInstalled) {
       out.push(`<div class="banner info"><span class="grow"><b>Hooks connected.</b> Sessions you start from now on report to the Room instantly. Already-open sessions pick them up after a restart.</span>
@@ -269,7 +275,8 @@
         <div class="room-actions">
           <button class="btn small ghost" data-act="style">Style</button>
           <button class="btn small" data-act="new" title="Start a new robot in this folder">+ Robot</button>
-          <button class="btn small ghost" data-act="term" title="Open Windows Terminal with claude in this folder">Terminal</button>
+          <button class="btn small ghost" data-act="term" title="Open ${WORDS.terminal} with claude in this folder">Terminal</button>
+          <button class="btn small ghost remove-btn" data-act="remove" title="Remove this room" aria-label="Remove this room">&#10005;</button>
         </div>
       </header>
       <div class="stage"><canvas></canvas></div>
@@ -308,11 +315,12 @@
         updateRoom(r, room, state);
         toast(`${room.name}: ${window.RoomThemes.labels[next]}`);
       }
+      if (btn.dataset.act === 'remove') confirmRemoveRoom(room);
       if (btn.dataset.act === 'new') openNewRobot(room && room.cwd);
       if (btn.dataset.act === 'term') {
         try {
           await api('/api/room/terminal', { cwd: room.cwd });
-          toast('Opening Windows Terminal…');
+          toast(`Opening ${WORDS.terminal}…`);
         } catch (err) {
           toast(err.message, true);
         }
@@ -370,7 +378,7 @@
           <span class="dot"></span>
           <span class="d-name">${esc(x.name)}</span>
           <span class="d-title">${esc(x.title)}</span>
-          <span class="d-detail">${esc(x.detail)}</span>
+          <span class="d-detail">${helperTag(x)}${esc(x.detail)}</span>
           <span class="d-time">${ago(x.lastActivity)}</span></li>`;
       })
       .join('');
@@ -387,10 +395,11 @@
     const panelOpen = selectedId && window.innerWidth >= 1100 ? 500 : 0;
     const avail = Math.max(200, window.innerWidth - panelOpen - 46);
     const scale = Math.max(1, Math.min(want, Math.floor(avail / room)));
-    if (scale === r.scale && r.canvas.style.width) return;
+    const w = room * scale + 'px', h = r.view.height * scale + 'px';
+    if (scale === r.scale && r.canvas.style.width === w && r.canvas.style.height === h) return;
     r.scale = scale;
-    r.canvas.style.width = room * scale + 'px';
-    r.canvas.style.height = H * scale + 'px';
+    r.canvas.style.width = w;
+    r.canvas.style.height = h; // rooms with more robots are taller
     r.el.style.width = room * scale + 6 + 'px';
   }
   window.addEventListener('resize', () => {
@@ -399,6 +408,12 @@
       fitRoom(r);
     }
   });
+
+  // "2 helpers ·" in front of the robot's status when sub-agents are working
+  function helperTag(x) {
+    const n = x.helpers && x.helpers.active;
+    return n ? `<b class="help-tag">${n} helper${n > 1 ? 's' : ''}</b> · ` : '';
+  }
 
   function ago(t) {
     if (!t) return '';
@@ -416,7 +431,12 @@
       tip.hidden = true;
       return;
     }
-    tip.innerHTML = `<b>${esc(s.name)}</b> · <span style="color:${STATE_COLORS[s.state]}">${LABELS[s.state]}</span><br>${esc(s.title)}<br><span class="muted">${esc(s.detail)}</span>`;
+    const extra = [];
+    if (s.helpers && s.helpers.total) extra.push(`${s.helpers.active ? s.helpers.active + ' helpers working, ' : ''}${s.helpers.total} used`);
+    if (s.connections && s.connections.length) extra.push('Connected to ' + s.connections.slice(0, 4).join(', '));
+    if (s.filesChanged) extra.push(`${s.filesChanged} files changed`);
+    tip.innerHTML = `<b>${esc(s.name)}</b> · <span style="color:${STATE_COLORS[s.state]}">${LABELS[s.state]}</span><br>${esc(s.title)}<br><span class="muted">${esc(s.detail)}</span>` +
+      (extra.length ? `<br><span class="muted">${esc(extra.join(' · '))}</span>` : '');
     tip.hidden = false;
     const w = tip.offsetWidth;
     tip.style.left = Math.min(x + 14, window.innerWidth - w - 8) + 'px';
@@ -476,7 +496,7 @@
     }
     const S = r.scale;
     const right = (r.view.width - at.x + 1) * S;
-    const stageH = H * S;
+    const stageH = r.view.height * S;
     r.card.style.right = right + 10 + 'px';
     r.card.style.top = '8px';
     r.card.style.maxHeight = stageH - 16 + 'px';
@@ -598,15 +618,74 @@
     $('#p-stop').disabled = s.stopping;
     $('#p-stop').textContent = s.stopping ? 'Stopping…' : 'Stop';
     $('#p-term').disabled = s.alive || s.placeholder;
-    $('#p-term').title = s.alive ? `Already open in the ${s.where}` : 'Continue this conversation in Windows Terminal';
+    $('#p-remove').disabled = s.placeholder;
+    $('#p-term').title = s.alive ? `Already open in the ${s.where}` : `Continue this conversation in ${WORDS.terminal}`;
 
-    // Reload messages when something changed
+    // Reload messages (and the scan) when something changed
     const stamp = s.lastActivity + ':' + s.state;
     if (stamp !== messagesStamp) {
       messagesStamp = stamp;
       loadMessages(selectedId);
+      loadScan(selectedId);
     }
   }
+
+  // ---- The scan: helpers, connections, and what it's working on ----
+
+  async function loadScan(id) {
+    const box = $('#p-scan-body');
+    if (box.dataset.id !== id) {
+      box.innerHTML = '<div class="scan-muted">Scanning…</div>';
+      box.dataset.id = id;
+    }
+    try {
+      const d = await api(`/api/session/${id}/scan`);
+      if (selectedId !== id) return;
+      const s = state.sessions[id];
+      box.innerHTML = d.empty || !s ? '<div class="scan-muted">Nothing to scan yet.</div>' : renderScan(d, s);
+    } catch (err) {
+      box.innerHTML = `<div class="m-error">${esc(err.message)}</div>`;
+    }
+  }
+
+  function renderScan(d, s) {
+    const row = (label, value) => `<div class="scan-row"><span class="scan-label">${label}</span><span class="scan-value">${value}</span></div>`;
+    const none = (text) => `<span class="scan-muted">${text}</span>`;
+    const since = (t) => (ago(t) === 'now' ? 'just now' : ago(t) + ' ago');
+    const out = [];
+
+    out.push(row('Working in', `<code>${esc(s.cwd)}</code>${s.branch ? ` <span class="scan-muted">⎇ ${esc(s.branch)}</span>` : ''}`));
+    out.push(row('Doing now', esc(s.detail)));
+
+    const h = d.helpers;
+    out.push(row('Helpers', h.total
+      ? `<b>${h.active}</b> working now · ${h.total} used` +
+        `<ul class="scan-list">${h.list.map((x) => `<li><span class="dot${x.working ? ' live' : ''}"></span>${esc(x.description)} <span class="scan-muted">${esc(x.type)}</span></li>`).join('')}</ul>`
+      : none('No helper agents used')));
+
+    out.push(row('Connections', d.connections.length
+      ? d.connections.map((c) => `<span class="chip-s" title="Last used ${since(c.last)}">${esc(c.name)} <b>${c.calls}</b></span>`).join('')
+      : none('No tools or connectors used')));
+    if (d.skills.length) out.push(row('Skills', d.skills.map((x) => `<span class="chip-s">${esc(x.name)}</span>`).join('')));
+
+    out.push(row('Files changed', d.files.total
+      ? `<b>${d.files.total}</b><ul class="scan-list">${d.files.recent.map((f) => `<li><code>${esc(f.path)}</code> <span class="scan-muted">×${f.times} · ${since(f.last)}</span></li>`).join('')}</ul>`
+      : none('None yet')));
+    if (d.commands.length) out.push(row('Last command', `<code>${esc(d.commands[0].command)}</code>`));
+    out.push(row('Activity', `${d.toolCalls} tool uses · ${d.prompts} messages from you${d.started ? ` · started ${since(d.started)}` : ''}`));
+    if (d.topTools.length) {
+      out.push(row('Most used', d.topTools.map((t) => `${esc(t.name.replace(/^mcp__/, '').replace('__', ' › '))} <b>${t.times}</b>`).join(' · ')));
+    }
+    return out.join('');
+  }
+
+  // Remember whether the scan is folded away
+  try {
+    if (localStorage.getItem('scanOpen') === '0') $('#p-scan').open = false;
+  } catch { /* private mode */ }
+  $('#p-scan').addEventListener('toggle', () => {
+    try { localStorage.setItem('scanOpen', $('#p-scan').open ? '1' : '0'); } catch { /* private mode */ }
+  });
 
   async function loadMessages(id) {
     const box = $('#p-messages');
@@ -708,7 +787,7 @@
   $('#p-term').addEventListener('click', async () => {
     try {
       await api(`/api/session/${selectedId}/terminal`, {});
-      toast('Opening Windows Terminal…');
+      toast(`Opening ${WORDS.terminal}…`);
     } catch (err) {
       toast(err.message, true);
     }
@@ -751,7 +830,7 @@
     openModal(`
       <h3>New robot</h3>
       <label class="field"><span>Project folder</span>
-        <input id="n-cwd" list="n-folders" value="${esc(cwd || '')}" placeholder="C:\\Users\\you\\my-project" spellcheck="false"></label>
+        <input id="n-cwd" list="n-folders" value="${esc(cwd || '')}" placeholder="${esc(WORDS.folder)}" spellcheck="false"></label>
       <datalist id="n-folders">${folders}</datalist>
       <label class="field"><span>What should it do?</span>
         <textarea id="n-text" rows="5" placeholder="e.g. Fix the failing tests and explain what was wrong"></textarea></label>
@@ -778,13 +857,13 @@
         try {
           await api('/api/room/terminal', { cwd: $('#n-cwd', m).value });
           closeModal();
-          toast('Opening Windows Terminal…');
+          toast(`Opening ${WORDS.terminal}…`);
         } catch (err) {
           toast(err.message, true);
         }
       });
       $('#n-text', m).addEventListener('keydown', (e) => {
-        if (e.key === 'Enter' && e.ctrlKey) $('#n-go', m).click();
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) $('#n-go', m).click();
       });
     });
   }
@@ -826,11 +905,22 @@
       </div>
       <label class="field"><span>Pixel zoom</span><input type="number" id="s-scale" min="1" max="5" value="${st.scale}"></label>
       <label class="check"><input type="checkbox" id="s-sound" ${st.sound ? 'checked' : ''}><span>8-bit bleeps when a robot needs you</span></label>
-      <label class="check"><input type="checkbox" id="s-notify" ${st.notify ? 'checked' : ''}><span>Windows notifications<small>Pop up when a robot needs you, even if this window is hidden.</small></span></label>
+      <label class="check"><input type="checkbox" id="s-notify" ${st.notify ? 'checked' : ''}><span>${WORDS.notify}<small>Pop up when a robot needs you, even if this window is hidden.</small></span></label>
+
+      <h4>Removed</h4>
+      <div class="status-line">${state.hidden && (state.hidden.rooms || state.hidden.sessions)
+        ? `You removed ${state.hidden.rooms} room${state.hidden.rooms === 1 ? '' : 's'} and ${state.hidden.sessions} robot${state.hidden.sessions === 1 ? '' : 's'}.`
+        : 'Nothing removed.'}</div>
+      <div class="modal-actions" style="justify-content:flex-start;margin-top:0">
+        <button class="btn small ghost" id="s-unremove" ${state.hidden && (state.hidden.rooms || state.hidden.sessions) ? '' : 'disabled'}>Show them all again</button>
+      </div>
 
       <h4>Terminal Claude</h4>
       <div class="status-line s-${cli.loggedIn ? 'working' : cli.found ? 'waiting' : 'blocked'}"><span class="dot"></span>
-        ${!cli.found ? 'Not installed.' : cli.loggedIn ? 'Signed in — Reply and New robot work.' : cli.loggedIn === false ? 'Not signed in. Run claude in a terminal and type /login.' : 'Checking…'}</div>
+        ${!cli.found ? 'Not installed.'
+          : cli.loggedIn ? `Signed in${cli.account ? ` as <b>${esc(cli.account)}</b>` : ''}${cli.plan ? ` (${esc(cli.plan)})` : ''}. Reply and New robot use this account.`
+          : cli.loggedIn === false ? 'Not signed in. Run claude in a terminal and type /login.' : 'Checking…'}</div>
+      <p class="note">AI Room only uses the Claude account signed in on this computer. It never stores or sends your login, and it only listens on this computer (127.0.0.1).</p>
 
       <div class="modal-actions">
         <button class="btn danger" id="s-quit">Quit AI Room</button>
@@ -870,6 +960,15 @@
           closeModal();
           for (const r of rooms.values()) r.canvas.style.width = '';
           toast('Saved.');
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+      $('#s-unremove', m).addEventListener('click', async () => {
+        try {
+          await api('/api/unremove-all', {});
+          closeModal();
+          toast('Everything is back in the Room.');
         } catch (err) {
           toast(err.message, true);
         }
@@ -952,15 +1051,97 @@
   // Toast
   // ---------------------------------------------------------------------------
 
+  // action (optional): { label, run } adds a button, e.g. "Undo"
   let toastTimer = null;
-  function toast(text, isError) {
+  function toast(text, isError, action) {
     const t = $('#toast');
     t.textContent = text;
+    if (action) {
+      const b = document.createElement('button');
+      b.className = 'btn small';
+      b.textContent = action.label;
+      b.addEventListener('click', () => {
+        t.hidden = true;
+        action.run();
+      });
+      t.append(b);
+    }
     t.className = 'toast' + (isError ? ' error' : '');
     t.hidden = false;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => { t.hidden = true; }, isError ? 6000 : 2600);
+    toastTimer = setTimeout(() => { t.hidden = true; }, action ? 9000 : isError ? 6000 : 2600);
   }
+
+  // ---------------------------------------------------------------------------
+  // Removing robots and rooms
+  // ---------------------------------------------------------------------------
+
+  function confirmRemoveRobot(s) {
+    const canDelete = !s.alive && !s.placeholder;
+    openModal(`
+      <h3>Remove ${esc(s.name)}?</h3>
+      <p>${esc(s.name)} <span class="scan-muted">(${esc(s.title)})</span> leaves the Room. Nothing is deleted.
+        If this chat does something new later, the robot comes back.</p>
+      <label class="check danger${canDelete ? '' : ' disabled'}"><input type="checkbox" id="r-delete" ${canDelete ? '' : 'disabled'}>
+        <span>Also move this chat's history to the ${WORDS.bin}
+        <small>${canDelete
+          ? `You can restore it from the ${WORDS.bin}. The Claude app may still list this chat, but it won't open. Your project files are never touched.`
+          : `It's still open in the ${esc(s.where)}. Close it there first if you want to delete its history.`}</small></span></label>
+      <div class="modal-actions">
+        <button class="btn ghost" data-close>Cancel</button>
+        <button class="btn danger" id="r-go">Remove</button>
+      </div>`, (m) => {
+      $('#r-go', m).addEventListener('click', async () => {
+        const deleteHistory = $('#r-delete', m).checked;
+        try {
+          await api(`/api/session/${s.id}/remove`, { deleteHistory });
+          closeModal();
+          if (selectedId === s.id) closePanel();
+          if (deleteHistory) toast(`${s.name} is gone. Its chat history is in the ${WORDS.bin}.`);
+          else toast(`${s.name} left the Room.`, false, { label: 'Undo', run: () => api(`/api/session/${s.id}/unremove`, {}).catch((e) => toast(e.message, true)) });
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+  }
+
+  function confirmRemoveRoom(room) {
+    if (!room) return;
+    const robots = room.sessions.map((id) => state.sessions[id]).filter(Boolean);
+    const closed = robots.filter((x) => !x.alive && !x.placeholder);
+    const open = robots.length - closed.length;
+    const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+    openModal(`
+      <h3>Remove the ${esc(room.name)} room?</h3>
+      <p>Its ${plural(robots.length, 'robot')} (${robots.map((x) => esc(x.name)).join(', ')}) leave the Room. Nothing is deleted.
+        If you work in this folder again, the room comes back.</p>
+      <label class="check danger${closed.length ? '' : ' disabled'}"><input type="checkbox" id="r-delete" ${closed.length ? '' : 'disabled'}>
+        <span>Also move the chat history of its ${plural(closed.length, 'closed chat')} to the ${WORDS.bin}
+        <small>${open ? `${plural(open, 'chat')} still open in the Claude app or a terminal will be kept. ` : ''}You can restore them from the ${WORDS.bin}. Your project files are never touched.</small></span></label>
+      <div class="modal-actions">
+        <button class="btn ghost" data-close>Cancel</button>
+        <button class="btn danger" id="r-go">Remove room</button>
+      </div>`, (m) => {
+      $('#r-go', m).addEventListener('click', async () => {
+        const deleteHistory = $('#r-delete', m).checked;
+        try {
+          const r = await api('/api/room/remove', { key: room.key, deleteHistory });
+          closeModal();
+          if (selectedId && room.sessions.includes(selectedId)) closePanel();
+          if (deleteHistory) toast(`The ${room.name} room is gone. ${plural(r.recycled, 'chat')} moved to the ${WORDS.bin}.`);
+          else toast(`The ${room.name} room was removed.`, false, { label: 'Undo', run: () => api('/api/room/unremove', { key: room.key }).catch((e) => toast(e.message, true)) });
+        } catch (err) {
+          toast(err.message, true);
+        }
+      });
+    });
+  }
+
+  $('#p-remove').addEventListener('click', () => {
+    const s = state && state.sessions[selectedId];
+    if (s) confirmRemoveRobot(s);
+  });
 
   // ---------------------------------------------------------------------------
   // Animation loop (~15 frames a second is plenty for pixel art)
@@ -1023,7 +1204,9 @@
     });
     demo = {
       sessions: {
-        a1: bot('a1', 'BOLT', 25, 'game', 'Add a boss fight', 'working', 'Editing Boss.js'),
+        a1: bot('a1', 'BOLT', 25, 'game', 'Add a boss fight', 'working', 'Editing Boss.js', {
+          helpers: { active: 2, total: 3 }, connections: ['GitHub', 'Browser'], filesChanged: 6,
+        }),
         a2: bot('a2', 'PIXEL', 190, 'game', 'Fix the double-jump bug', 'waiting', 'Finished — your turn'),
         a3: bot('a3', 'COG', 130, 'game', 'Set up the game engine', 'blocked', 'Wants to run: npm install phaser', {
           reason: 'permission', where: 'Terminal',
@@ -1035,6 +1218,16 @@
         b3: bot('b3', 'ZIP', 330, 'site', 'Deploy to GitHub Pages', 'idle', 'Closed', { alive: false, lastActivity: now - 3 * 3600e3, canReply: true }),
       },
     };
+    // &crowd fills the first room with 8 robots (two rows of desks)
+    if (PARAMS.has('crowd')) {
+      const extra = [['LINT', 60, 'working', 'Running npm test'], ['SPARK', 300, 'idle', 'Idle — session open'], ['TURBO', 160, 'working', 'Reading Player.js'], ['ECHO', 220, 'waiting', 'Finished — your turn'], ['DOT', 100, 'idle', 'Closed']];
+      demo.rooms0 = ['a1', 'a2', 'a3'];
+      extra.forEach(([name, hue, st, detail], k) => {
+        const id = 'c' + k;
+        demo.sessions[id] = bot(id, name, hue, 'game', `${name.toLowerCase()} task`, st, detail, st === 'idle' && detail === 'Closed' ? { alive: false } : {});
+        demo.rooms0.push(id);
+      });
+    }
     demoPublish();
     // &petnap puts every pet to sleep on the first computer (for screenshots)
     if (PARAMS.has('petnap')) {
@@ -1049,11 +1242,13 @@
   function demoPublish() {
     const counts = { working: 0, waiting: 0, blocked: 0, idle: 0 };
     for (const s of Object.values(demo.sessions)) counts[s.state]++;
+    const alive = (ids) => ids.filter((id) => demo.sessions[id]);
     onState(JSON.parse(JSON.stringify({
       rooms: [
-        { key: 'game', cwd: 'C:\\Projects\\space-game', name: 'space-game', hue: 205, sessions: ['a1', 'a2', 'a3'], lastActivity: 2 },
-        { key: 'site', cwd: 'C:\\Projects\\portfolio-site', name: 'portfolio-site', hue: 140, sessions: ['b1', 'b2', 'b3'], lastActivity: 1 },
-      ],
+        { key: 'game', cwd: 'C:\\Projects\\space-game', name: 'space-game', hue: 205, sessions: alive(demo.rooms0 || ['a1', 'a2', 'a3']), lastActivity: 2 },
+        { key: 'site', cwd: 'C:\\Projects\\portfolio-site', name: 'portfolio-site', hue: 140, sessions: alive(['b1', 'b2', 'b3']), lastActivity: 1 },
+      ].filter((r) => r.sessions.length),
+      hidden: { rooms: 0, sessions: 0 },
       sessions: demo.sessions,
       counts,
       hooks: { installed: true, partial: false, error: null },
@@ -1072,7 +1267,35 @@
       setTimeout(demoPublish, 50);
       return Promise.resolve({ ok: true });
     }
-    const m = /^\/api\/session\/(\w+)\/(messages|seen)$/.exec(path);
+    // Removing in the demo just takes the pretend robots away (until reload)
+    const rm = /^\/api\/session\/(\w+)\/remove$/.exec(path);
+    if (rm || path === '/api/room/remove') {
+      const ids = rm ? [rm[1]] : Object.keys(s).filter((id) => (body.key === 'game' ? /^[ac]/ : /^b/).test(id));
+      ids.forEach((id) => delete s[id]);
+      setTimeout(demoPublish, 50);
+      return Promise.resolve({ ok: true, recycled: body.deleteHistory ? ids.length : 0 });
+    }
+    const m = /^\/api\/session\/(\w+)\/(messages|seen|scan)$/.exec(path);
+    if (m && m[2] === 'scan') {
+      const x = s[m[1]];
+      const busy = x.helpers && x.helpers.active;
+      return Promise.resolve({
+        helpers: {
+          active: busy ? 2 : 0, total: busy ? 3 : 0,
+          list: busy ? [
+            { description: 'Design the boss attack patterns', type: 'general', working: true },
+            { description: 'Find where enemies are spawned', type: 'Explore', working: true },
+            { description: 'Check the game still builds', type: 'general', working: false },
+          ] : [],
+        },
+        connections: busy ? [{ name: 'GitHub', calls: 12, last: Date.now() - 5 * 60e3 }, { name: 'Browser', calls: 4, last: Date.now() - 60e3 }] : [],
+        skills: [],
+        files: { total: 6, recent: [{ path: 'src/Boss.js', times: 5, last: Date.now() - 20e3 }, { path: 'src/levels/castle.json', times: 2, last: Date.now() - 4 * 60e3 }] },
+        commands: [{ command: 'npm run build', time: Date.now() - 90e3 }],
+        topTools: [{ name: 'Edit', times: 14 }, { name: 'Read', times: 11 }, { name: 'Bash', times: 6 }],
+        toolCalls: 38, prompts: 4, started: Date.now() - 50 * 60e3,
+      });
+    }
     if (m && m[2] === 'seen') {
       if (s[m[1]] && s[m[1]].state === 'waiting') Object.assign(s[m[1]], { state: 'idle', detail: 'Idle — session open' });
       setTimeout(demoPublish, 50);

@@ -15,8 +15,8 @@
   --red: #ff4f5e;
   --idle: #5f6488;
   --accent: #8ea6ff;
-  --mono: "Cascadia Mono", "Cascadia Code", Consolas, "Courier New", monospace;
-  --ui: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --mono: "Cascadia Mono", "Cascadia Code", Consolas, "SF Mono", ui-monospace, Menlo, Monaco, "Courier New", monospace;
+  --ui: "Segoe UI Variable Text", "Segoe UI", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   --panel-w: 500px;
   color-scheme: dark;
 }
@@ -217,6 +217,11 @@ button { font: inherit; color: inherit; }
   text-align: left;
 }
 .room-actions { display: flex; gap: 6px; }
+.btn.remove-btn:hover { color: #ff9aa4; border-color: #7a2b36; background: rgba(255, 79, 94, 0.08); }
+.check.danger { padding: 10px 12px; border: 2px solid #4a2330; background: rgba(255, 79, 94, 0.06); }
+.check.danger input { accent-color: var(--red); }
+.check.disabled { opacity: 0.55; cursor: not-allowed; }
+.toast .btn { margin-left: 12px; }
 
 .stage { position: relative; line-height: 0; }
 .stage canvas { display: block; image-rendering: pixelated; cursor: default; }
@@ -365,6 +370,39 @@ button { font: inherit; color: inherit; }
   font: 12px var(--mono);
   overflow-wrap: anywhere;
 }
+
+/* ---- Scan (in the side panel) ---- */
+.scan { border-bottom: 2px solid var(--ink); background: #10122a; }
+.scan summary {
+  cursor: pointer;
+  padding: 8px 14px;
+  font: 700 11px var(--mono);
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--muted);
+  list-style: none;
+}
+.scan summary::-webkit-details-marker { display: none; }
+.scan summary::before { content: "▸ "; }
+.scan[open] summary::before { content: "▾ "; }
+#p-scan-body { padding: 0 14px 12px; display: grid; gap: 7px; max-height: 38vh; overflow-y: auto; }
+.scan-row { display: grid; grid-template-columns: 100px minmax(0, 1fr); gap: 10px; font-size: 12.5px; line-height: 1.45; }
+.scan-label { font: 700 10.5px var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); padding-top: 2px; }
+.scan-value { min-width: 0; overflow-wrap: anywhere; }
+.scan-value code { font: 11.5px var(--mono); background: #0b0c16; padding: 1px 4px; }
+.scan-muted { color: var(--muted); font-size: 11.5px; }
+.scan-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 3px; }
+.scan-list .dot { width: 6px; height: 6px; margin-right: 7px; box-shadow: none; vertical-align: 1px; }
+.scan-list .dot.live { background: var(--green); animation: blink 1s steps(2, jump-none) infinite; }
+.chip-s {
+  display: inline-block;
+  margin: 0 5px 5px 0;
+  padding: 1px 7px;
+  border: 1px solid var(--line);
+  background: #0b0c16;
+  font: 11.5px var(--mono);
+}
+.help-tag { color: var(--green); }
 
 .messages {
   flex: 1;

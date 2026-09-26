@@ -2,9 +2,13 @@
 //
 // Layout (in art pixels, before zooming):
 //
-//   | corner |  desk 0  |  desk 1  | ... |  door  |
-//   |________|__________|__________|_____|________|   <- wall ends at y=72
-//   |                  floor                      |
+//   | corner |  desk 0  |  desk 1  |  desk 2  |  desk 3  |  door  |   <- back wall
+//   |________|__________|__________|__________|__________|        |
+//   |           row 2 of desks (desk 4, 5, …)            |  aisle |   <- more robots,
+//   |                                                    |        |      more rows
+//
+// At most 4 desks sit in a row. More robots get another row and the room grows
+// taller, so nothing has to shrink.
 //
 // The walls, floor and decorations come from the room's style (themes.js).
 // This file draws the desks, the robots and their screens, and moves robots
@@ -14,20 +18,21 @@
   const { drawRobot, text, textWidth, STATE_COLORS } = window.Sprites;
   const Themes = window.RoomThemes;
 
-  const H = 128;           // room height
+  const BASE_H = 128;      // height of a room with one row of desks
+  const ROW_H = 70;        // extra height for every extra row
+  const MAX_COLS = 4;      // desks per row
   const WALL = 72;         // wall height; floor starts just below
   const LEFT = 32;         // space for the corner furniture
   const SLOT = 62;         // width of one desk
-  const RIGHT = 54;        // space for the door
-  const DESK_Y = 70;       // top of the desks
-  const SEAT_FEET = 92;    // where a robot stands when it gets up
-  const LANE_FEET = 110;   // the "corridor" robots walk along
+  const RIGHT = 54;        // space for the door (and the aisle to it)
+  const DESK_Y = 70;       // top of the first row of desks
   const DOOR_FEET = 84;    // standing at the door
-  const MONITOR_TOP = 47;  // where the pet naps on top of a computer
-  const PLATE_Y = 32;      // name plates (high enough that a napping pet fits underneath)
   const WALK_SPEED = 46;   // pixels per second
 
   const CODE_COLORS = ['#7fdbca', '#c792ea', '#ffcb6b', '#82aaff', '#c3e88d', '#f78c6c', '#89ddff', '#5c6773'];
+
+  // Tiny helper robot (for sub-agents), 5 x 6 pixels
+  const HELPER = ['..s..', '.ooo.', 'obebo', 'obbbo', '.ooo.', '.o.o.'];
 
   // ---- small helpers ----
 
@@ -66,6 +71,13 @@
     return Math.floor(now / 800) % 2 ? base : '#b07a10';
   }
 
+  // How many rows and columns of desks a room needs for n desks
+  function grid(n) {
+    const rows = Math.max(1, Math.ceil(n / MAX_COLS));
+    const cols = Math.max(2, Math.ceil(n / rows));
+    return { rows, cols };
+  }
+
   // ---------------------------------------------------------------------------
 
   class RoomView {
@@ -80,6 +92,9 @@
       this.hover = null;
       this.selected = null;
       this.width = 0;
+      this.height = BASE_H;
+      this.rows = 1;
+      this.cols = 2;
       this.seed = 1;
       this.style = 'mixed';
     }
@@ -102,12 +117,17 @@
       }
       while (this.desks.length && this.desks[this.desks.length - 1] === null) this.desks.pop();
 
-      const slots = Math.max(2, this.desks.length);
-      const width = LEFT + slots * SLOT + RIGHT;
-      if (width !== this.width) {
+      const { rows, cols } = grid(this.desks.length);
+      const width = LEFT + cols * SLOT + RIGHT;
+      const height = BASE_H + (rows - 1) * ROW_H;
+      this.rows = rows;
+      this.cols = cols;
+      if (width !== this.width || height !== this.height || !this.canvas.width) {
         this.width = width;
+        this.height = height;
         this.canvas.width = width;
-        this.canvas.height = H;
+        this.canvas.height = height;
+        this.pet = null; // the room changed shape; the pet starts fresh
       }
 
       for (const id of [...this.actors.keys()]) if (!ids.includes(id)) this.actors.delete(id);
@@ -118,7 +138,7 @@
         const q = queue.indexOf(id);
         this.actors.set(id, q >= 0
           ? { id, x: this.doorX() + 3 - q * 15, feet: DOOR_FEET, mode: 'door', goal: 'door', path: [] }
-          : { id, x: this.seatX(i), feet: SEAT_FEET, mode: 'seat', goal: 'seat', path: [] });
+          : { id, x: this.seatX(i), feet: this.seatFeet(i), mode: 'seat', goal: 'seat', path: [] });
       });
     }
 
@@ -131,8 +151,13 @@
       return !!s && s.state === 'blocked' && s.reason === 'permission';
     }
 
-    deskCenter(i) { return LEFT + i * SLOT + SLOT / 2; }
+    // Where desk i is
+    deskRow(i) { return Math.floor(i / this.cols); }
+    deskCenter(i) { return LEFT + (i % this.cols) * SLOT + SLOT / 2; }
+    deskTop(i) { return DESK_Y + this.deskRow(i) * ROW_H; }
     seatX(i) { return this.deskCenter(i) - 7; }
+    seatFeet(i) { return this.deskTop(i) + 22; }  // where a robot stands when it gets up
+    laneFeet(i) { return this.deskTop(i) + 40; }  // the aisle in front of that row
     doorX() { return this.width - RIGHT + 16; }
 
     // Robots queue at the door, oldest question first
@@ -153,19 +178,20 @@
         const q = queue.indexOf(id);
         const want = q >= 0 ? 'door' : 'seat';
         const targetX = want === 'door' ? this.doorX() + 3 - q * 15 : this.seatX(i);
-        const targetFeet = want === 'door' ? DOOR_FEET : SEAT_FEET;
+        const targetFeet = want === 'door' ? DOOR_FEET : this.seatFeet(i);
+        const lane = this.laneFeet(i);
 
         if (a.mode === 'door' && want === 'door' && Math.abs(a.x - targetX) > 0.5) {
           // Just shuffling along the queue
           a.mode = 'walk';
           a.path = [{ x: targetX, feet: DOOR_FEET }];
         } else if (a.goal !== want) {
-          // Get up, walk along the corridor, then go to the door (or back to the desk)
+          // Get up, walk along the aisle, then go to the door (or back to the desk)
           a.goal = want;
           a.mode = 'walk';
           a.path = [];
-          if (Math.abs(a.feet - LANE_FEET) > 0.5) a.path.push({ x: a.x, feet: LANE_FEET });
-          a.path.push({ x: targetX, feet: LANE_FEET }, { x: targetX, feet: targetFeet });
+          if (Math.abs(a.feet - lane) > 0.5) a.path.push({ x: a.x, feet: lane });
+          a.path.push({ x: targetX, feet: lane }, { x: targetX, feet: targetFeet });
         }
 
         if (a.mode === 'walk') {
@@ -192,17 +218,26 @@
     // Its y is where its feet are: the floor, a desk top, or on top of a monitor.
     // -------------------------------------------------------------------------
 
+    // A random place on the floor (in one of the aisles between desk rows)
+    petSpot() {
+      const row = Math.floor(Math.random() * this.rows);
+      const top = DESK_Y + row * ROW_H + 36;
+      const bottom = row === this.rows - 1 ? this.height - 5 : top + 10;
+      return { x: LEFT + 2 + Math.random() * (this.doorX() - LEFT - 22), y: top + Math.random() * (bottom - top) };
+    }
+
     updatePet(dt) {
       if (!this.width) return;
       if (!this.pet) {
         const r = rng(this.seed * 17);
-        this.pet = { x: LEFT + 20 + r() * 80, y: 118, dir: 1, mode: 'sit', surface: 'floor', desk: -1, plan: [], step: { do: 'rest', mode: 'sleep', secs: 1 + r() * 3 } };
+        const start = this.petSpot();
+        this.pet = { x: start.x, y: start.y, dir: 1, mode: 'sit', surface: 'floor', desk: -1, plan: [], step: { do: 'rest', mode: 'sleep', secs: 1 + r() * 3 } };
       }
       const p = this.pet;
 
       // Its desk went away (robot left the room): land back on the floor
-      if (p.surface !== 'floor' && !this.desks[p.desk]) {
-        Object.assign(p, { y: 118, surface: 'floor', desk: -1, plan: [], step: null });
+      if (p.desk >= 0 && !this.desks[p.desk]) {
+        Object.assign(p, this.petSpot(), { surface: 'floor', desk: -1, plan: [], step: null });
       }
       if (!p.step) p.step = p.plan.shift() || null;
       if (!p.step) {
@@ -231,6 +266,7 @@
           st.fx = p.x;
           st.fy = p.y;
           if (Math.abs(st.x - p.x) > 0.5) p.dir = Math.sign(st.x - p.x);
+          if (st.desk !== undefined) p.desk = st.desk; // so it's drawn in front of that desk
         }
         st.t = Math.min(1, st.t + dt / st.dur);
         p.mode = 'jump';
@@ -240,7 +276,7 @@
           p.x = st.x;
           p.y = st.y;
           p.surface = st.surface;
-          p.desk = st.desk === undefined ? -1 : st.desk;
+          if (st.surface === 'floor') p.desk = -1;
           p.step = null;
         }
       } else if (st.do === 'rest') {
@@ -254,7 +290,7 @@
 
     // Chooses what the pet does next. It's a busy animal.
     petPlan() {
-      const spot = () => ({ x: LEFT + 2 + Math.random() * (this.doorX() - LEFT - 22), y: 112 + Math.random() * 11 });
+      const spot = () => this.petSpot();
       const desks = this.desks.map((id, i) => (id ? i : -1)).filter((i) => i >= 0);
       const roll = Math.random();
 
@@ -262,17 +298,19 @@
         // Climb onto a computer and nap on it for 10 seconds
         const i = desks[Math.floor(Math.random() * desks.length)];
         const cx = this.deskCenter(i);
+        const top = this.deskTop(i);
+        const floorY = this.laneFeet(i) + 3;
         return [
-          { do: 'walk', x: cx + 14, y: 113, speed: 20 },
+          { do: 'walk', x: cx + 14, y: floorY, speed: 20 },
           { do: 'rest', mode: 'sit', secs: 0.5 },
-          { do: 'jump', x: cx + 14, y: DESK_Y, dur: 0.5, h: 10, surface: 'desk', desk: i },
+          { do: 'jump', x: cx + 14, y: top, dur: 0.5, h: 10, surface: 'desk', desk: i },
           { do: 'rest', mode: 'sit', secs: 0.8 },
-          { do: 'jump', x: cx - 6, y: MONITOR_TOP, dur: 0.4, h: 2, surface: 'monitor', desk: i },
+          { do: 'jump', x: cx - 6, y: top - 23, dur: 0.4, h: 2, surface: 'monitor', desk: i },
           { do: 'rest', mode: 'sit', secs: 1.5, face: 1 },
           { do: 'rest', mode: 'sleep', secs: 10, face: 1 },
           { do: 'rest', mode: 'sit', secs: 1.2 },
-          { do: 'jump', x: cx + 14, y: DESK_Y, dur: 0.4, h: 3, surface: 'desk', desk: i },
-          { do: 'jump', x: cx + 20 + Math.random() * 12, y: 114 + Math.random() * 8, dur: 0.55, h: 5, surface: 'floor' },
+          { do: 'jump', x: cx + 14, y: top, dur: 0.4, h: 3, surface: 'desk', desk: i },
+          { do: 'jump', x: cx + 20 + Math.random() * 12, y: floorY + Math.random() * 5, dur: 0.55, h: 5, surface: 'floor' },
         ];
       }
       if (roll < 0.55) {
@@ -305,20 +343,24 @@
       for (const a of this.actors.values()) {
         if (a.mode !== 'seat' && x >= a.x - 1 && x <= a.x + 16 && y >= a.feet - 24 && y <= a.feet + 1) return a.id;
       }
-      if (y < 28 || y > 100) return null;
-      const i = Math.floor((x - LEFT) / SLOT);
-      return i >= 0 && i < this.desks.length ? this.desks[i] : null;
+      for (let i = 0; i < this.desks.length; i++) {
+        if (!this.desks[i]) continue;
+        const cx = this.deskCenter(i), top = this.deskTop(i);
+        if (x >= cx - SLOT / 2 && x < cx + SLOT / 2 && y >= top - 42 && y <= top + 28) return this.desks[i];
+      }
+      return null;
     }
 
     // Everything a style needs to know to draw the room
     env(now, date) {
       return {
-        W: this.width, H, WALL, FLOOR: WALL + 3, DESK_Y, LEFT, SLOT, RIGHT,
-        slots: Math.max(2, this.desks.length),
+        W: this.width, H: this.height, WALL, FLOOR: WALL + 3, DESK_Y, LEFT, SLOT, RIGHT,
+        slots: this.cols, rows: this.rows,
         hue: this.room.hue, seed: this.seed, now, date, hour: date.getHours(),
         sky: Themes.skyFor(date.getHours()),
         doorX: this.doorX(),
         deskCenter: (i) => this.deskCenter(i),
+        deskTop: (i) => this.deskTop(i),
       };
     }
 
@@ -339,22 +381,34 @@
       const doorOpen = [...this.actors.values()].some((a) => a.goal === 'door' && a.mode === 'door');
       theme.door(ctx, e, doorOpen);
       theme.corner(ctx, e);
-
-      // Desks (and seated robots)
-      for (let i = 0; i < e.slots; i++) {
-        const id = this.desks[i];
-        if (id) this.drawDesk(ctx, i, this.sessions[id], this.actors.get(id), now, theme, e);
-        else theme.spare(ctx, e, i);
-      }
       theme.front(ctx, e);
 
-      // Walking / waiting-at-door robots, back to front, then the pet
-      const standing = [...this.actors.values()].filter((a) => a.mode !== 'seat').sort((a, b) => a.feet - b.feet);
-      for (const a of standing) this.drawStanding(ctx, a, this.sessions[a.id], now);
-      if (this.pet) {
-        if (theme.pet === 'drone') Themes.drawDrone(ctx, this.pet, e, theme.petLight);
-        else Themes.drawCat(ctx, this.pet, e);
+      // Desks, walking robots and the pet, drawn from the back of the room to
+      // the front so the nearer thing is always on top
+      const items = [];
+      const slots = this.rows * this.cols;
+      for (let i = 0; i < slots; i++) {
+        const id = this.desks[i];
+        const top = this.deskTop(i);
+        items.push({
+          depth: top + 27,
+          draw: () => (id ? this.drawDesk(ctx, i, this.sessions[id], this.actors.get(id), now, theme, e) : theme.spare(ctx, e, i, top)),
+        });
       }
+      for (const a of this.actors.values()) {
+        if (a.mode !== 'seat') items.push({ depth: a.feet + 8, draw: () => this.drawStanding(ctx, a, this.sessions[a.id], now) });
+      }
+      if (this.pet) {
+        const p = this.pet;
+        const depth = p.desk >= 0 && this.desks[p.desk] ? this.deskTop(p.desk) + 27.5 : p.y + 8;
+        items.push({
+          depth,
+          draw: () => (theme.pet === 'drone' ? Themes.drawDrone(ctx, p, e, theme.petLight) : Themes.drawCat(ctx, p, e)),
+        });
+      }
+      items.sort((a, b) => a.depth - b.depth).forEach((item) => item.draw());
+
+      // Name plates go on top, so nothing ever covers a robot's name
       for (let i = 0; i < this.desks.length; i++) {
         const id = this.desks[i];
         if (id) this.drawPlate(ctx, i, this.sessions[id], now);
@@ -363,7 +417,7 @@
 
       // Night time: dim the room, then add the lights and glowing screens on top
       const dark = e.sky.night && theme.dim > 0;
-      if (dark) rect(ctx, 0, 0, e.W, H, `rgba(10, 12, 40, ${theme.dim})`);
+      if (dark) rect(ctx, 0, 0, e.W, e.H, `rgba(10, 12, 40, ${theme.dim})`);
       theme.light(ctx, e);
       for (let i = 0; i < this.desks.length; i++) {
         const id = this.desks[i];
@@ -381,11 +435,12 @@
     drawDesk(ctx, i, s, actor, now, theme, e) {
       const f = theme.furniture;
       const cx = this.deskCenter(i);
-      const mx = cx - 13, my = DESK_Y - 22;
+      const top = this.deskTop(i);
+      const mx = cx - 13, my = top - 22;
       const on = s && !(s.state === 'idle' && !s.alive);
       const light = lightFor(s, now);
 
-      // Glow on the wall behind a screen that's on
+      // Glow behind a screen that's on
       if (s && s.state !== 'idle') {
         const pulse = s.state === 'blocked' ? 0.08 + 0.05 * Math.sin(now / 200) : 0.1;
         ctx.globalAlpha = pulse;
@@ -408,44 +463,64 @@
       // Desk
       const dx = cx - 26;
       ctx.globalAlpha = 0.25;
-      rect(ctx, dx - 1, DESK_Y + 20, 54, 2, '#000'); // shadow on the floor
+      rect(ctx, dx - 1, top + 20, 54, 2, '#000'); // shadow on the floor
       ctx.globalAlpha = 1;
-      rect(ctx, dx - 1, DESK_Y - 1, 54, 19, '#15161f');
-      rect(ctx, dx, DESK_Y, 52, 3, f.top);
-      rect(ctx, dx, DESK_Y, 52, 1, f.edge);
-      rect(ctx, dx, DESK_Y + 3, 52, 13, f.front);
-      rect(ctx, dx + 3, DESK_Y + 5, 14, 4, f.panel);
-      rect(ctx, dx + 3, DESK_Y + 10, 14, 4, f.panel);
-      rect(ctx, dx + 9, DESK_Y + 7, 2, 1, f.knob);
-      rect(ctx, dx + 9, DESK_Y + 12, 2, 1, f.knob);
-      rect(ctx, dx + 1, DESK_Y + 16, 3, 4, f.leg);
-      rect(ctx, dx + 48, DESK_Y + 16, 3, 4, f.leg);
-      theme.extras(ctx, e, cx, s, i);
+      rect(ctx, dx - 1, top - 1, 54, 19, '#15161f');
+      rect(ctx, dx, top, 52, 3, f.top);
+      rect(ctx, dx, top, 52, 1, f.edge);
+      rect(ctx, dx, top + 3, 52, 13, f.front);
+      rect(ctx, dx + 3, top + 5, 14, 4, f.panel);
+      rect(ctx, dx + 3, top + 10, 14, 4, f.panel);
+      rect(ctx, dx + 9, top + 7, 2, 1, f.knob);
+      rect(ctx, dx + 9, top + 12, 2, 1, f.knob);
+      rect(ctx, dx + 1, top + 16, 3, 4, f.leg);
+      rect(ctx, dx + 48, top + 16, 3, 4, f.leg);
+      theme.extras(ctx, e, cx, s, i, top);
+      if (s) this.drawHelpers(ctx, cx, top, s, now);
 
       // Robot in its chair (if it's at the desk)
       const seated = !actor || actor.mode === 'seat';
-      const rx = cx - 7, ry = DESK_Y - 1;
+      const rx = cx - 7, ry = top - 1;
       if (!seated) {
-        this.drawChair(ctx, cx, true, f);
+        this.drawChair(ctx, cx, true, f, top);
         return;
       }
       const facingYou = s && (s.state === 'waiting' || s.state === 'blocked');
       if (facingYou) {
-        this.drawChair(ctx, cx, false, f);
+        this.drawChair(ctx, cx, false, f, top);
         drawRobot(ctx, this.frontPose(s, now), rx + this.shake(s, now), ry, s.hue, light);
       } else {
         drawRobot(ctx, this.backPose(s, now), rx, ry, s ? s.hue : 220, light);
-        this.drawChair(ctx, cx, true, f);
+        this.drawChair(ctx, cx, true, f, top);
       }
     }
 
-    // Name plate on the wall above the monitor, with a status light.
-    // Drawn after the pet, so the pet can never cover a robot's name.
+    // Little helper robots on the desk while sub-agents are working
+    drawHelpers(ctx, cx, top, s, now) {
+      const n = (s.helpers && s.helpers.active) || 0;
+      if (!n) return;
+      const shown = Math.min(n, 3);
+      const colors = { o: '#15161f', b: `hsl(${s.hue} 45% 72%)`, e: '#3ddc84', s: '#3ddc84' };
+      for (let k = 0; k < shown; k++) {
+        const x = cx - 25 + k * 6;
+        const hop = Math.floor(now / 180 + k * 2) % 4 === 0 ? 1 : 0; // busy little hops
+        HELPER.forEach((row, y) => {
+          for (let j = 0; j < row.length; j++) {
+            const c = colors[row[j]];
+            if (c) rect(ctx, x + j, top - 6 + y - hop, 1, 1, c);
+          }
+        });
+      }
+      if (n > 3) text(ctx, '+' + (n - 3), cx - 25 + 18, top - 6, '#3ddc84');
+    }
+
+    // Name plate above the monitor, with a status light.
+    // Drawn after everything else in the room, so nothing can cover a name.
     drawPlate(ctx, i, s, now) {
       const cx = this.deskCenter(i);
       const label = s.name;
       const tw = textWidth(label) + 9;
-      const px = Math.round(cx - tw / 2), py = PLATE_Y;
+      const px = Math.round(cx - tw / 2), py = this.deskTop(i) - 38;
       const hot = this.selected === s.id || this.hover === s.id;
       rect(ctx, px - 1, py - 1, tw + 2, 9, hot ? '#ffffff' : '#0e0f16');
       rect(ctx, px, py, tw, 7, '#1d1f2e');
@@ -478,8 +553,8 @@
     }
 
     // Office chair; from behind (back = true) you see the backrest
-    drawChair(ctx, cx, back, f) {
-      const x = cx - 7, y = DESK_Y + 15; // low enough that the robot's back light shows
+    drawChair(ctx, cx, back, f, top) {
+      const x = cx - 7, y = top + 15; // low enough that the robot's back light shows
       ctx.globalAlpha = 0.25;
       rect(ctx, cx - 7, y + 13, 15, 1, '#000');
       ctx.globalAlpha = 1;
@@ -513,7 +588,7 @@
     // The monitor picture: code, "YOUR TURN", "ALLOW?", or dark
     drawScreen(ctx, i, s, now, glowing) {
       const cx = this.deskCenter(i);
-      const sx = cx - 11, sy = DESK_Y - 20, w = 22, h = 13;
+      const sx = cx - 11, sy = this.deskTop(i) - 20, w = 22, h = 13;
       if (!s) return;
       const blink = Math.floor(now / 500) % 2 === 0;
 
@@ -577,7 +652,7 @@
         if (a.mode === 'seat') {
           const sleeping = s.state === 'idle' && !s.alive;
           bx = this.deskCenter(i) - 1;
-          by = DESK_Y - 1 + (sleeping ? 1 : 0);
+          by = this.deskTop(i) - 1 + (sleeping ? 1 : 0);
         } else {
           bx = Math.round(a.x) + 6;
           by = Math.round(a.feet) - 22;
@@ -596,20 +671,21 @@
     drawBubble(ctx, i, s, actor, now) {
       if (!s || !actor) return;
       const cx = this.deskCenter(i);
+      const top = this.deskTop(i);
       const bob = Math.floor(now / 400) % 2;
       if (actor.mode !== 'seat') {
         if (actor.mode === 'door') this.bubble(ctx, Math.round(actor.x) + 11, Math.round(actor.feet) - 33 + bob, '!', '#ff4f5e');
         return;
       }
-      if (s.state === 'waiting') this.bubble(ctx, cx + 8, DESK_Y - 11 + bob, '?', '#e09a10');
-      else if (s.state === 'blocked') this.bubble(ctx, cx + 8, DESK_Y - 11 + bob, '!', '#ff4f5e');
-      else if (s.stopping) this.bubble(ctx, cx + 8, DESK_Y - 11 + bob, '.', '#5f6488');
+      if (s.state === 'waiting') this.bubble(ctx, cx + 8, top - 11 + bob, '?', '#e09a10');
+      else if (s.state === 'blocked') this.bubble(ctx, cx + 8, top - 11 + bob, '!', '#ff4f5e');
+      else if (s.stopping) this.bubble(ctx, cx + 8, top - 11 + bob, '.', '#5f6488');
       else if (s.state === 'idle' && !s.alive) {
         // Floating Zzz
         for (let k = 0; k < 3; k++) {
           const t = ((now / 1000 + k * 0.9 + s.hue) % 2.7) / 2.7;
           ctx.globalAlpha = 1 - t;
-          text(ctx, 'Z', cx + 12 + Math.round(t * 6), DESK_Y - 2 - Math.round(t * 14), '#c9cde6');
+          text(ctx, 'Z', cx + 12 + Math.round(t * 6), top - 2 - Math.round(t * 14), '#c9cde6');
         }
         ctx.globalAlpha = 1;
       }
@@ -632,5 +708,5 @@
   }
 
   window.RoomView = RoomView;
-  window.RoomLayout = { H, LEFT, SLOT, RIGHT, DESK_Y };
+  window.RoomLayout = { BASE_H, LEFT, SLOT, RIGHT, DESK_Y };
 })();

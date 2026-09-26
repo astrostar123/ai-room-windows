@@ -44,6 +44,10 @@
       <button class="btn ghost icon" id="p-close" aria-label="Close panel" title="Close (Esc)">&#10005;</button>
     </header>
     <div class="panel-detail" id="p-detail"></div>
+    <details class="scan" id="p-scan" open>
+      <summary>Scan</summary>
+      <div id="p-scan-body"></div>
+    </details>
     <div id="p-perm"></div>
     <div class="messages" id="p-messages"></div>
     <footer class="panel-foot">
@@ -54,6 +58,7 @@
         <button class="btn danger" id="p-stop">Stop</button>
         <span class="spacer"></span>
         <button class="btn ghost" id="p-term" title="Continue this conversation in Windows Terminal">Open in Terminal</button>
+        <button class="btn ghost remove-btn" id="p-remove" title="Remove this robot from the Room">Remove</button>
       </div>
     </footer>
   </aside>

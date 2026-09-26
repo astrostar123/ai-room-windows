@@ -1,11 +1,13 @@
-// AI Room for Windows — the local server.
+// AI Room — the local server (Windows and Mac).
 //
 //   node server.js                       start the Room (in this console)
 //   node server.js --open                ...and open the Room window
-//   node server.js --background --open  run hidden, no console (what the .bat uses)
+//   node server.js --background --open  run hidden, no window (what the Start file uses)
 //
-// It only listens on 127.0.0.1 (this PC), and every API call needs a secret
-// token that only the Room page knows. Nothing is sent anywhere else.
+// It only listens on 127.0.0.1 (this computer), and every API call needs a
+// secret token that only the Room page knows. Nothing is sent anywhere else.
+// It uses YOUR Claude account through the claude command on this computer;
+// it never stores or sends any login.
 
 const http = require('http');
 const fs = require('fs');
@@ -19,6 +21,8 @@ const permissions = require('./lib/permissions');
 const runner = require('./lib/runner');
 const hooksSetup = require('./lib/hooks-setup');
 const sessions = require('./lib/sessions');
+const scan = require('./lib/scan');
+const removal = require('./lib/cleanup');
 
 const { PORT, ROOM_DIR, APP_DIR, settings } = config;
 const PUBLIC_DIR = path.join(APP_DIR, 'public');
@@ -35,6 +39,7 @@ const TOKEN = (() => {
   return token;
 })();
 const ROOM_URL = `http://127.0.0.1:${PORT}/`;
+const BIN = process.platform === 'darwin' ? 'Trash' : 'Recycle Bin';
 const LOG_FILE = path.join(ROOM_DIR, 'server.log');
 
 // Changes whenever the page's files change, so open Room windows know to reload
@@ -48,7 +53,7 @@ const BUILD_ID = (() => {
 
 // ---------------------------------------------------------------------------
 // Background mode
-// "Start AI Room.bat" runs us with --background. We start a hidden copy of
+// "Start AI Room.bat" (Windows) or "Start AI Room.command" (Mac) runs us with --background. We start a hidden copy of
 // ourselves (so there's no window to close by accident), send its messages to
 // ~/.claude/ai-room/server.log, and this copy exits straight away.
 // ---------------------------------------------------------------------------
@@ -63,8 +68,8 @@ if (process.argv.includes('--background')) {
       spawn(process.execPath, args, { cwd: APP_DIR, detached: true, windowsHide: true, stdio: ['ignore', out, out] }).unref();
     }
     if (!wantsWindow) return process.exit(0);
-    // We open the window ourselves (not the hidden copy), because Windows only
-    // lets the program you just started put a window in front of you
+    // We open the window ourselves (not the hidden copy), because the computer
+    // only lets the program you just started put a window in front of you
     waitForRoom(20, () => {
       runner.openRoomWindow(ROOM_URL);
       setTimeout(() => process.exit(0), 1000);
@@ -136,8 +141,10 @@ function buildState() {
   return {
     ...built,
     hooks: hooksStatus,
-    cli: { found: runner.cli.found, loggedIn: runner.cli.loggedIn, error: runner.cli.error },
+    cli: { found: runner.cli.found, loggedIn: runner.cli.loggedIn, account: runner.cli.account, plan: runner.cli.plan, error: runner.cli.error },
     presence: { windows: clients.size, onScreen: visibleClients() },
+    hidden: removal.counts(),
+    platform: process.platform,
     settings,
     buildId: BUILD_ID,
   };
@@ -446,7 +453,7 @@ async function handle(req, res) {
     return;
   }
 
-  let m = /^\/api\/session\/([^/]+)\/(messages|seen|reply|stop|terminal)$/.exec(p);
+  let m = /^\/api\/session\/([^/]+)\/(messages|seen|reply|stop|terminal|scan|remove|unremove)$/.exec(p);
   if (m) {
     const [, id, action] = m;
     if (!SESSION_ID.test(id)) return sendJson(res, { error: 'Bad session id' }, 400);
@@ -462,6 +469,12 @@ async function handle(req, res) {
       if (run && run.status === 'error') data.items.push({ kind: 'error', text: run.error, time: run.endedAt });
       return sendJson(res, data);
     }
+    if (req.method === 'GET' && action === 'scan') {
+      const s = lastState && lastState.sessions[id];
+      const f = transcripts.listFiles().find((x) => x.sessionId === id);
+      if (!s || !f) return sendJson(res, { empty: true });
+      return sendJson(res, scan.full(f, s.cwd, s.state === 'working'));
+    }
     if (req.method !== 'POST') return sendJson(res, { error: 'Use POST' }, 405);
     const body = await readBody(req);
 
@@ -469,6 +482,24 @@ async function handle(req, res) {
       seen[id] = Date.now();
       saveSeen();
       refreshSoon();
+      return sendJson(res, { ok: true });
+    }
+    if (action === 'remove') {
+      // Take the robot out of the Room; optionally recycle its chat history
+      const s = lastState && lastState.sessions[id];
+      let recycled = 0;
+      if (body.deleteHistory) {
+        if (!s || s.alive) return sendJson(res, { error: `Close this chat in the ${s ? s.where : 'app'} first, then its history can be deleted.` }, 409);
+        recycled = await removal.recycle([id], transcripts.listFiles());
+        if (recycled < 0) return sendJson(res, { error: `Could not move the chat history to the ${BIN}.` }, 500);
+      }
+      removal.hideSession(id);
+      refresh(true);
+      return sendJson(res, { ok: true, recycled });
+    }
+    if (action === 'unremove') {
+      removal.unhideSession(id);
+      refresh(true);
       return sendJson(res, { ok: true });
     }
     if (action === 'stop') return sendJson(res, { ok: true, did: stopSession(id) });
@@ -533,6 +564,32 @@ async function handle(req, res) {
         return sendJson(res, { error: err.message }, 400);
       }
     }
+    case '/api/room/remove': {
+      // Take a whole room out; optionally recycle the history of its closed chats
+      const room = lastState && lastState.rooms.find((r) => r.key === body.key);
+      if (!room) return sendJson(res, { error: 'That room is already gone.' }, 404);
+      let recycled = 0, kept = 0;
+      if (body.deleteHistory) {
+        const closed = room.sessions.filter((id) => {
+          const s = lastState.sessions[id];
+          return s && !s.alive && !s.placeholder;
+        });
+        kept = room.sessions.length - closed.length;
+        recycled = await removal.recycle(closed, transcripts.listFiles());
+        if (recycled < 0) return sendJson(res, { error: `Could not move the chat history to the ${BIN}.` }, 500);
+      }
+      removal.hideRoom(room.key);
+      refresh(true);
+      return sendJson(res, { ok: true, recycled, kept });
+    }
+    case '/api/room/unremove':
+      removal.unhideRoom(String(body.key || ''));
+      refresh(true);
+      return sendJson(res, { ok: true });
+    case '/api/unremove-all':
+      removal.unhideAll();
+      refresh(true);
+      return sendJson(res, { ok: true });
     case '/api/room/terminal': {
       try {
         runner.openTerminal({ cwd: String(body.cwd || '') });
@@ -638,7 +695,7 @@ function cleanup() {
   } catch { /* already gone */ }
 }
 process.on('exit', cleanup);
-for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK']) {
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP', ...(process.platform === 'win32' ? ['SIGBREAK'] : [])]) {
   process.on(sig, () => {
     log(`Stopping (${sig === 'SIGHUP' ? 'its window was closed' : sig}).`);
     process.exit(0);

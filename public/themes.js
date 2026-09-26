@@ -10,8 +10,9 @@
 //   door(ctx, e, open)  the door robots walk to (open = a robot is there)
 //   corner(ctx, e)      big thing in the left corner (shelf, arcade, fireplace…)
 //   front(ctx, e)       small things at the front of the room
-//   spare(ctx, e, i)    what fills a desk slot nobody is using
-//   extras(ctx, e, cx, s, i)  small things on each desk
+//   spare(ctx, e, i, top)          what fills a desk slot nobody is using
+//   extras(ctx, e, cx, s, i, top)  small things on each desk
+//   ("top" is the y of that row's desk tops: 70 for the first row, lower for the next)
 //   light(ctx, e)       glowing lights, drawn after the room gets dark at night
 //
 // "e" holds the room's size and the time; see room.js (env()).
@@ -278,23 +279,25 @@
     }
   }
 
-  function waterCooler(ctx, e, i) {
+  // "top" is where the desk top would be in that slot's row (70 in the first row)
+  function waterCooler(ctx, e, i, top) {
     const cx = e.deskCenter(i);
-    faint(ctx, 0.25, () => rect(ctx, cx - 7, 94, 15, 2, '#000'));
-    rect(ctx, cx - 6, 62, 12, 33, '#15161f');
-    rect(ctx, cx - 5, 76, 10, 18, '#d7dbe6');
-    rect(ctx, cx - 5, 76, 2, 18, '#eef1f7');
-    rect(ctx, cx - 4, 63, 8, 12, '#7cc3ee');
-    rect(ctx, cx - 3, 65, 2, 8, '#b4e1fb');
+    const o = top - 70;
+    faint(ctx, 0.25, () => rect(ctx, cx - 7, 94 + o, 15, 2, '#000'));
+    rect(ctx, cx - 6, 62 + o, 12, 33, '#15161f');
+    rect(ctx, cx - 5, 76 + o, 10, 18, '#d7dbe6');
+    rect(ctx, cx - 5, 76 + o, 2, 18, '#eef1f7');
+    rect(ctx, cx - 4, 63 + o, 8, 12, '#7cc3ee');
+    rect(ctx, cx - 3, 65 + o, 2, 8, '#b4e1fb');
     const bubble = Math.floor(e.now / 700) % 6;
-    px(ctx, cx + 1, 73 - bubble, '#dff3ff');
-    rect(ctx, cx - 1, 80, 3, 2, '#3a3e55');
+    px(ctx, cx + 1, 73 + o - bubble, '#dff3ff');
+    rect(ctx, cx - 1, 80 + o, 3, 2, '#3a3e55');
   }
 
   // Server rack with blinking lights (neon + space)
-  function serverRack(ctx, e, i, body, edge) {
+  function serverRack(ctx, e, i, top, body, edge) {
     const cx = e.deskCenter(i);
-    const x = cx - 10, y = 40, w = 20, h = 55;
+    const x = cx - 10, y = top - 30, w = 20, h = 55;
     faint(ctx, 0.3, () => rect(ctx, x - 1, y + h, w + 2, 2, '#000'));
     rect(ctx, x - 1, y - 1, w + 2, h + 1, '#07080d');
     rect(ctx, x, y, w, h, body);
@@ -372,9 +375,9 @@
           });
         });
       }
-      // Rug
+      // Rug (at the front of the room)
       const h = (e.hue + 180) % 360;
-      const top = 95, bottom = 123, x0 = e.LEFT + 4, x1 = e.doorX - 8;
+      const top = e.H - 33, bottom = e.H - 5, x0 = e.LEFT + 4, x1 = e.doorX - 8;
       for (let y = top; y < bottom; y++) {
         const inset = Math.round((bottom - y) * 0.28);
         const edge = y < top + 2 || y > bottom - 3;
@@ -422,15 +425,15 @@
     },
 
     front(ctx, e) {
-      plant(ctx, 6, 106, '#2f7a45', '#49a862', '#b5653f', '#cc7a52');
+      plant(ctx, 6, e.H - 22, '#2f7a45', '#49a862', '#b5653f', '#cc7a52');
     },
 
     spare: waterCooler,
 
-    extras(ctx, e, cx, s, i) {
+    extras(ctx, e, cx, s, i, top) {
       const r = rng(e.seed + i * 31);
-      if (r() < 0.8) mug(ctx, cx + 16, e.DESK_Y, ['#e0e0e0', '#d65b5b', '#5b8fd6', '#e8c14a'][Math.floor(r() * 4)], s, e);
-      if (r() < 0.6) papers(ctx, cx - 23, e.DESK_Y);
+      if (r() < 0.8) mug(ctx, cx + 16, top, ['#e0e0e0', '#d65b5b', '#5b8fd6', '#e8c14a'][Math.floor(r() * 4)], s, e);
+      if (r() < 0.6 && !(s && s.helpers && s.helpers.active)) papers(ctx, cx - 23, top);
     },
 
     light(ctx, e) {
@@ -634,7 +637,7 @@
 
     front(ctx, e) {
       // A glowing cactus
-      const x = 8, y = 108;
+      const x = 8, y = e.H - 20;
       rect(ctx, x, y, 11, 9, '#07060d');
       rect(ctx, x + 1, y + 1, 9, 7, '#2b2540');
       rect(ctx, x + 4, y - 11, 3, 12, '#7cff6b');
@@ -645,17 +648,17 @@
       faint(ctx, 0.2, () => rect(ctx, x - 2, y - 13, 15, 16, '#7cff6b'));
     },
 
-    spare(ctx, e, i) {
-      serverRack(ctx, e, i, '#1c1830', '#2ef2ff');
+    spare(ctx, e, i, top) {
+      serverRack(ctx, e, i, top, '#1c1830', '#2ef2ff');
     },
 
-    extras(ctx, e, cx, s, i) {
+    extras(ctx, e, cx, s, i, top) {
       // Energy drink and an RGB light strip under the desk
       const x = cx + 17;
-      rect(ctx, x, e.DESK_Y - 6, 4, 6, '#07060d');
-      rect(ctx, x + 1, e.DESK_Y - 5, 2, 5, ['#2ef2ff', '#ff3fd0', '#7cff6b'][i % 3]);
-      rect(ctx, cx - 25, e.DESK_Y + 15, 50, 1, `hsl(${(e.now / 12 + i * 90) % 360} 100% 62%)`);
-      faint(ctx, 0.2, () => rect(ctx, cx - 25, e.DESK_Y + 16, 50, 3, `hsl(${(e.now / 12 + i * 90) % 360} 100% 62%)`));
+      rect(ctx, x, top - 6, 4, 6, '#07060d');
+      rect(ctx, x + 1, top - 5, 2, 5, ['#2ef2ff', '#ff3fd0', '#7cff6b'][i % 3]);
+      rect(ctx, cx - 25, top + 15, 50, 1, `hsl(${(e.now / 12 + i * 90) % 360} 100% 62%)`);
+      faint(ctx, 0.2, () => rect(ctx, cx - 25, top + 16, 50, 3, `hsl(${(e.now / 12 + i * 90) % 360} 100% 62%)`));
     },
 
     light() {},
@@ -846,7 +849,7 @@
 
     front(ctx, e) {
       // Supply crate
-      const x = 6, y = 106;
+      const x = 6, y = e.H - 22;
       rect(ctx, x - 1, y - 1, 18, 13, '#15161f');
       rect(ctx, x, y, 16, 11, '#5b6579');
       rect(ctx, x, y, 16, 1, '#8b95ab');
@@ -854,17 +857,17 @@
       for (let k = 0; k < 16; k += 4) rect(ctx, x + k, y + 4, 2, 3, '#2b2b30');
     },
 
-    spare(ctx, e, i) {
-      serverRack(ctx, e, i, '#4b5468', '#8b95ab');
+    spare(ctx, e, i, top) {
+      serverRack(ctx, e, i, top, '#4b5468', '#8b95ab');
     },
 
-    extras(ctx, e, cx, s, i) {
+    extras(ctx, e, cx, s, i, top) {
       // Blinking buttons on the desk and a blue light along its edge
       for (let k = 0; k < 3; k++) {
         const on = Math.sin(e.now / (200 + k * 90) + i * 2 + k) > 0;
-        px(ctx, cx + 16 + k * 3, e.DESK_Y + 5, on ? ['#ff4f5e', '#3ddc84', '#ffb627'][k] : '#6b7488');
+        px(ctx, cx + 16 + k * 3, top + 5, on ? ['#ff4f5e', '#3ddc84', '#ffb627'][k] : '#6b7488');
       }
-      rect(ctx, cx - 26, e.DESK_Y + 2, 52, 1, '#4fc3ff');
+      rect(ctx, cx - 26, top + 2, 52, 1, '#4fc3ff');
     },
 
     light(ctx, e) {
@@ -979,8 +982,8 @@
           px(ctx, sx + 2, r.y + 1, '#2a1a0e');
         }
       });
-      // Braided round rug
-      const cx = Math.round((e.LEFT + e.doorX) / 2), cy = 110;
+      // Braided round rug (at the front of the room)
+      const cx = Math.round((e.LEFT + e.doorX) / 2), cy = e.H - 18;
       const rx = Math.round((e.doorX - e.LEFT) / 2) - 10;
       faint(ctx, 0.3, () => ellipse(ctx, cx, cy + 1, rx + 1, 12, '#000')); // shadow under the rug
       ['#6e2c22', '#9a3b2e', '#c46a44', '#d8a45a', '#9a3b2e', '#5c6e3e'].forEach((c, k) => {
@@ -1049,7 +1052,7 @@
 
     front(ctx, e) {
       // Stack of firewood
-      const x = 5, y = 108;
+      const x = 5, y = e.H - 20;
       for (const [lx, ly] of [[0, 6], [5, 6], [10, 6], [2, 1], [7, 1]]) {
         circle(ctx, x + lx + 2, y + ly + 2, 2, '#8a5a32');
         px(ctx, x + lx + 2, y + ly + 2, '#c79c62');
@@ -1057,15 +1060,15 @@
       }
     },
 
-    spare(ctx, e, i) {
+    spare(ctx, e, i, top) {
       // Potted fern
       const cx = e.deskCenter(i);
-      plant(ctx, cx - 7, 82, '#2f6b3f', '#4f9a5a', '#8a5a32', '#a8723f');
+      plant(ctx, cx - 7, top + 12, '#2f6b3f', '#4f9a5a', '#8a5a32', '#a8723f');
     },
 
-    extras(ctx, e, cx, s, i) {
-      mug(ctx, cx + 16, e.DESK_Y, ['#efe3c8', '#9a3b2e', '#5c6e3e'][i % 3], s, e);
-      if (i % 2) papers(ctx, cx - 23, e.DESK_Y);
+    extras(ctx, e, cx, s, i, top) {
+      mug(ctx, cx + 16, top, ['#efe3c8', '#9a3b2e', '#5c6e3e'][i % 3], s, e);
+      if (i % 2 && !(s && s.helpers && s.helpers.active)) papers(ctx, cx - 23, top);
     },
 
     light(ctx, e) {

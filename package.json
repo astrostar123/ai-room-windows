@@ -1,7 +1,7 @@
 {
   "name": "ai-room-windows",
   "version": "1.0.0",
-  "description": "A pixel-art office for your Claude Code sessions on Windows. Every project is a room, every session is a robot at a desk.",
+  "description": "A pixel-art office for your Claude Code sessions on Windows and Mac. Every project is a room, every session is a robot at a desk.",
   "private": true,
   "license": "MIT",
   "main": "server.js",
@@ -14,13 +14,15 @@
     "node": ">=18"
   },
   "os": [
-    "win32"
+    "win32",
+    "darwin"
   ],
   "keywords": [
     "claude",
     "claude-code",
     "pixel-art",
     "dashboard",
-    "windows"
+    "windows",
+    "macos"
   ]
 }
