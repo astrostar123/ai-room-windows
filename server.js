@@ -54,11 +54,41 @@ const BUILD_ID = (() => {
 // ---------------------------------------------------------------------------
 
 if (process.argv.includes('--background')) {
-  trimLog();
-  const out = fs.openSync(LOG_FILE, 'a');
-  const args = process.argv.slice(1).filter((a) => a !== '--background');
-  spawn(process.execPath, args, { cwd: APP_DIR, detached: true, windowsHide: true, stdio: ['ignore', out, out] }).unref();
-  process.exit(0);
+  const wantsWindow = process.argv.includes('--open');
+  isRoomUp((up) => {
+    if (!up) {
+      trimLog();
+      const out = fs.openSync(LOG_FILE, 'a');
+      const args = process.argv.slice(1).filter((a) => a !== '--background' && a !== '--open');
+      spawn(process.execPath, args, { cwd: APP_DIR, detached: true, windowsHide: true, stdio: ['ignore', out, out] }).unref();
+    }
+    if (!wantsWindow) return process.exit(0);
+    // We open the window ourselves (not the hidden copy), because Windows only
+    // lets the program you just started put a window in front of you
+    waitForRoom(20, () => {
+      runner.openRoomWindow(ROOM_URL);
+      setTimeout(() => process.exit(0), 1000);
+    });
+  });
+  return; // the hidden copy does the rest
+}
+
+// Is AI Room already answering on its port?
+function isRoomUp(done) {
+  const req = http.get({ host: '127.0.0.1', port: PORT, path: '/api/ping', timeout: 1000, headers: { host: `127.0.0.1:${PORT}` } }, (res) => {
+    let out = '';
+    res.on('data', (c) => { out += c; });
+    res.on('end', () => done(out.includes('ai-room')));
+  });
+  req.on('timeout', () => req.destroy());
+  req.on('error', () => done(false));
+}
+
+function waitForRoom(triesLeft, done) {
+  isRoomUp((up) => {
+    if (up || triesLeft <= 0) return done();
+    setTimeout(() => waitForRoom(triesLeft - 1, done), 300);
+  });
 }
 
 // Keeps the log file from growing forever
@@ -561,8 +591,8 @@ server.on('error', (err) => {
     res.on('data', (c) => { out += c; });
     res.on('end', () => {
       if (out.includes('ai-room')) {
-        log('AI Room is already running — opening its window.');
-        runner.openRoomWindow(ROOM_URL);
+        log('AI Room is already running.');
+        if (process.argv.includes('--open')) runner.openRoomWindow(ROOM_URL);
         setTimeout(() => process.exit(0), 500);
       } else {
         log(`Port ${PORT} is used by another program. Set AIROOM_PORT to pick another port.`);
