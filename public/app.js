@@ -52,7 +52,25 @@
       setOffline(false);
       sendPresence();
     };
-    es.onerror = () => setOffline(true);
+    es.onerror = () => {
+      setOffline(true);
+      // The browser gives up for good on some errors; then we reconnect ourselves
+      if (es.readyState === EventSource.CLOSED) setTimeout(() => recover(), 2000);
+    };
+  }
+
+  // AI Room went away and maybe came back: reconnect, or reload if it no longer
+  // knows this page's secret
+  async function recover() {
+    try {
+      const ping = await fetch('/api/ping', { cache: 'no-store' });
+      if (!ping.ok) throw new Error('not up');
+      const check = await fetch('/api/state', { headers: { 'x-room-token': TOKEN }, cache: 'no-store' });
+      if (check.status === 401) return location.reload();
+      connect();
+    } catch {
+      setTimeout(recover, 3000);
+    }
   }
 
   function setOffline(value) {
@@ -68,7 +86,11 @@
   }
   document.addEventListener('visibilitychange', sendPresence);
 
+  let buildId = null;
   function onState(s) {
+    // AI Room was updated: reload to get the new page
+    if (s.buildId && buildId && s.buildId !== buildId) return location.reload();
+    buildId = s.buildId || buildId;
     state = s;
     noticeChanges(s);
     renderFleet(s);
@@ -245,6 +267,7 @@
       <header class="room-head">
         <div class="room-names"><h2 class="room-name"></h2><span class="room-path"></span></div>
         <div class="room-actions">
+          <button class="btn small ghost" data-act="style">Style</button>
           <button class="btn small" data-act="new" title="Start a new robot in this folder">+ Robot</button>
           <button class="btn small ghost" data-act="term" title="Open Windows Terminal with claude in this folder">Terminal</button>
         </div>
@@ -276,6 +299,15 @@
       const btn = e.target.closest('[data-act]');
       if (!btn) return;
       const room = state.rooms.find((x) => x.key === r.key);
+      if (btn.dataset.act === 'style') {
+        // Next style for just this room
+        const order = window.RoomThemes.ORDER;
+        const now = r.view.theme().name;
+        const next = order[(order.indexOf(now) + 1) % order.length];
+        try { localStorage.setItem('style:' + r.key, next); } catch { /* private mode */ }
+        updateRoom(r, room, state);
+        toast(`${room.name}: ${window.RoomThemes.labels[next]}`);
+      }
       if (btn.dataset.act === 'new') openNewRobot(room && room.cwd);
       if (btn.dataset.act === 'term') {
         try {
@@ -289,9 +321,28 @@
     return r;
   }
 
+  // A room's own style (picked with its Style button) beats the one in Settings
+  function styleFor(key) {
+    if (DEMO && PARAMS.get('style')) {
+      // ?demo&style=neon,cabin gives the first demo room neon and the second cabin
+      const list = PARAMS.get('style').split(',');
+      return list[Math.max(0, ['game', 'site'].indexOf(key)) % list.length];
+    }
+    let own = null;
+    try { own = localStorage.getItem('style:' + key); } catch { /* private mode */ }
+    return own || (state && state.settings.roomStyle) || 'mixed';
+  }
+
+  function forgetRoomStyles() {
+    try {
+      for (const k of Object.keys(localStorage)) if (k.startsWith('style:')) localStorage.removeItem(k);
+    } catch { /* private mode */ }
+  }
+
   function updateRoom(r, data, s) {
-    r.view.setRoom(data, s.sessions);
+    r.view.setRoom(data, s.sessions, styleFor(data.key));
     r.view.selected = selectedId;
+    $('[data-act="style"]', r.el).title = `Style: ${window.RoomThemes.labels[r.view.theme().name]} (click for the next one)`;
     r.canvas.setAttribute('role', 'img');
     r.canvas.setAttribute('aria-label', `${data.name} room: ` + data.sessions.map((id) => `${s.sessions[id].name} ${LABELS[s.sessions[id].state]}`).join(', '));
     $('.room-name', r.el).textContent = data.name;
@@ -535,10 +586,11 @@
     const send = $('#p-send');
     let note = '';
     if (s.managed) note = 'Working on it… you can reply when it finishes.';
-    else if (s.alive) note = `This session is open in the ${s.where}. Reply there — the Room can't type into it.`;
     else if (!state.cli.found) note = 'Replying needs the claude command (Claude Code for the terminal).';
     else if (state.cli.loggedIn === false) note = 'Replying needs the terminal Claude signed in (see the banner at the top).';
-    else note = 'Your reply continues this conversation in the background (claude -p --resume).';
+    else if (s.busy) note = `It's busy${s.openElsewhere ? ` in the ${s.where}` : ''}. You can reply when it has finished.`;
+    else if (s.openElsewhere) note = `Also open in the ${s.where}. Your reply runs here in the Room; that window won't show it until you reopen the chat.`;
+    else note = 'Your reply continues this conversation right here.';
     $('#p-note').textContent = note;
     reply.disabled = !s.canReply;
     send.disabled = !s.canReply;
@@ -614,9 +666,21 @@
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) sendReply();
   });
 
+  const okToReplyHere = new Set(); // chats open elsewhere that you said yes to
+
   async function sendReply() {
     const text = $('#p-reply').value.trim();
     if (!text || !selectedId) return;
+    const s = state.sessions[selectedId];
+    if (s && s.openElsewhere && !okToReplyHere.has(selectedId)) {
+      const yes = confirm(
+        `${s.name}'s chat is also open in the ${s.where}.\n\n` +
+        `Your reply will run here in the Room. The ${s.where} window won't show it until you close and reopen that chat. ` +
+        `If you type in that window before reopening it, it won't know what happened here.\n\nSend it from the Room?`,
+      );
+      if (!yes) return;
+      okToReplyHere.add(selectedId);
+    }
     $('#p-send').disabled = true;
     try {
       const r = await api(`/api/session/${selectedId}/reply`, { text });
@@ -750,6 +814,12 @@
         <input type="number" id="s-timeout" min="10" max="540" value="${st.permissionTimeoutSec}"></label>
 
       <h4>Room</h4>
+      <label class="field"><span>Room style</span>
+        <select id="s-style">
+          ${[['mixed', 'Mixed — every room gets its own style'], ...window.RoomThemes.ORDER.map((k) => [k, window.RoomThemes.labels[k]])]
+            .map(([v, l]) => `<option value="${v}"${st.roomStyle === v ? ' selected' : ''}>${l}</option>`).join('')}
+        </select></label>
+      <p class="note" style="margin-top:-6px">Each room's <b>Style</b> button changes just that room. Saving a new style here resets those.</p>
       <div class="row2">
         <label class="field"><span>Show sessions from the last (hours)</span><input type="number" id="s-hours" min="1" max="336" value="${st.showHours}"></label>
         <label class="field"><span>"Your turn" fades after (hours)</span><input type="number" id="s-amber" min="0.1" max="336" step="0.5" value="${st.amberHours}"></label>
@@ -785,7 +855,10 @@
         const notify = $('#s-notify', m).checked;
         if (notify && 'Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
         try {
+          const roomStyle = $('#s-style', m).value;
+          if (roomStyle !== st.roomStyle) forgetRoomStyles();
           await api('/api/settings', {
+            roomStyle,
             catchPermissions: $('#s-catch', m).checked,
             permissionTimeoutSec: $('#s-timeout', m).value,
             showHours: $('#s-hours', m).value,
@@ -963,6 +1036,13 @@
       },
     };
     demoPublish();
+    // &petnap puts every pet to sleep on the first computer (for screenshots)
+    if (PARAMS.has('petnap')) {
+      for (const r of rooms.values()) {
+        const cx = r.view.deskCenter(0);
+        r.view.pet = { x: cx - 6, y: 47, dir: 1, mode: 'sleep', surface: 'monitor', desk: 0, plan: [], step: { do: 'rest', mode: 'sleep', secs: 99 } };
+      }
+    }
   }
 
   // Sends the pretend state through the normal drawing code
@@ -979,7 +1059,7 @@
       hooks: { installed: true, partial: false, error: null },
       cli: { found: true, loggedIn: true, error: null },
       presence: { windows: 1, onScreen: 1 },
-      settings: { showHours: 12, amberHours: 6, catchPermissions: true, permissionTimeoutSec: 120, sound: true, notify: false, scale: Number(PARAMS.get('scale')) || 3 },
+      settings: { showHours: 12, amberHours: 6, catchPermissions: true, permissionTimeoutSec: 120, sound: true, notify: false, scale: Number(PARAMS.get('scale')) || 3, roomStyle: 'mixed' },
     })));
   }
 

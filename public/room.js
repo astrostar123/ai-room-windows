@@ -2,25 +2,29 @@
 //
 // Layout (in art pixels, before zooming):
 //
-//   | shelf |  desk 0  |  desk 1  | ... |  door  |
-//   |_______|__________|__________|_____|________|   <- wall ends at y=72
-//   |                 floor                      |
+//   | corner |  desk 0  |  desk 1  | ... |  door  |
+//   |________|__________|__________|_____|________|   <- wall ends at y=72
+//   |                  floor                      |
 //
-// Robots sit at their desk with their back to you, so you can see their screen.
-// When one needs permission it walks over to the door.
+// The walls, floor and decorations come from the room's style (themes.js).
+// This file draws the desks, the robots and their screens, and moves robots
+// around: when one needs permission it walks over to the door.
 
 (function () {
   const { drawRobot, text, textWidth, STATE_COLORS } = window.Sprites;
+  const Themes = window.RoomThemes;
 
   const H = 128;           // room height
   const WALL = 72;         // wall height; floor starts just below
-  const LEFT = 32;         // space for the bookshelf and plant
+  const LEFT = 32;         // space for the corner furniture
   const SLOT = 62;         // width of one desk
   const RIGHT = 54;        // space for the door
   const DESK_Y = 70;       // top of the desks
   const SEAT_FEET = 92;    // where a robot stands when it gets up
   const LANE_FEET = 110;   // the "corridor" robots walk along
   const DOOR_FEET = 84;    // standing at the door
+  const MONITOR_TOP = 47;  // where the pet naps on top of a computer
+  const PLATE_Y = 32;      // name plates (high enough that a napping pet fits underneath)
   const WALK_SPEED = 46;   // pixels per second
 
   const CODE_COLORS = ['#7fdbca', '#c792ea', '#ffcb6b', '#82aaff', '#c3e88d', '#f78c6c', '#89ddff', '#5c6773'];
@@ -36,7 +40,7 @@
     return h >>> 0;
   }
 
-  // Seeded random numbers, so a room always gets the same furniture
+  // Seeded random numbers, so a room always looks the same
   function rng(seed) {
     let s = (seed >>> 0) || 1;
     return () => {
@@ -52,21 +56,6 @@
     ctx.fillRect(Math.round(x), Math.round(y), w, h);
   }
 
-  // Straight pixel line (for clock hands)
-  function line(ctx, x0, y0, x1, y1, color) {
-    ctx.fillStyle = color;
-    const dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0);
-    const sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
-    let err = dx + dy;
-    for (;;) {
-      ctx.fillRect(x0, y0, 1, 1);
-      if (x0 === x1 && y0 === y1) break;
-      const e2 = 2 * err;
-      if (e2 >= dy) { err += dy; x0 += sx; }
-      if (e2 <= dx) { err += dx; y0 += sy; }
-    }
-  }
-
   function lightFor(s, now) {
     if (!s) return STATE_COLORS.off;
     if (s.state === 'idle') return s.alive ? STATE_COLORS.idle : STATE_COLORS.off;
@@ -75,17 +64,6 @@
     if (s.state === 'working') return Math.sin(now / 90 + s.hue) > 0.6 ? '#1f8a52' : base;
     if (s.state === 'blocked') return Math.floor(now / 350) % 2 ? base : '#8c2530';
     return Math.floor(now / 800) % 2 ? base : '#b07a10';
-  }
-
-  function isNight(hour) {
-    return hour >= 20 || hour < 6;
-  }
-
-  function skyColors(hour) {
-    if (isNight(hour)) return ['#0b1030', '#18204d'];
-    if (hour < 8) return ['#6b5aa8', '#f7a26b'];
-    if (hour < 17) return ['#6fbbef', '#b7e3fb'];
-    return ['#6a3d7a', '#f08a5d'];
   }
 
   // ---------------------------------------------------------------------------
@@ -98,17 +76,20 @@
       this.sessions = {};
       this.desks = [];           // desk index -> session id (or null)
       this.actors = new Map();   // session id -> where its robot is
+      this.pet = null;           // the room's cat or drone
       this.hover = null;
       this.selected = null;
       this.width = 0;
       this.seed = 1;
+      this.style = 'mixed';
     }
 
     // Called whenever new state arrives from the server.
-    setRoom(room, sessionsById) {
+    setRoom(room, sessionsById, style) {
       this.room = room;
       this.sessions = sessionsById;
       this.seed = hashStr(room.key);
+      this.style = style || 'mixed';
       const ids = room.sessions;
 
       // Keep each robot at the same desk; newcomers take the first free desk
@@ -141,6 +122,11 @@
       });
     }
 
+    // Which style this room uses ("mixed" picks one from the folder name)
+    theme() {
+      return Themes.pick(this.style, this.seed);
+    }
+
     wantsDoor(s) {
       return !!s && s.state === 'blocked' && s.reason === 'permission';
     }
@@ -156,7 +142,7 @@
         .sort((a, b) => (this.sessions[a].since || 0) - (this.sessions[b].since || 0));
     }
 
-    // Moves robots between their desk and the door.
+    // Moves robots between their desk and the door, and walks the pet.
     update(dt) {
       const queue = this.doorQueue();
       this.desks.forEach((id, i) => {
@@ -197,6 +183,114 @@
           if (!a.path.length) a.mode = a.goal;
         }
       });
+      this.updatePet(dt);
+    }
+
+    // -------------------------------------------------------------------------
+    // The pet. It follows a little plan, one step at a time:
+    //   walk / run somewhere, jump up or down, or rest (sit or sleep).
+    // Its y is where its feet are: the floor, a desk top, or on top of a monitor.
+    // -------------------------------------------------------------------------
+
+    updatePet(dt) {
+      if (!this.width) return;
+      if (!this.pet) {
+        const r = rng(this.seed * 17);
+        this.pet = { x: LEFT + 20 + r() * 80, y: 118, dir: 1, mode: 'sit', surface: 'floor', desk: -1, plan: [], step: { do: 'rest', mode: 'sleep', secs: 1 + r() * 3 } };
+      }
+      const p = this.pet;
+
+      // Its desk went away (robot left the room): land back on the floor
+      if (p.surface !== 'floor' && !this.desks[p.desk]) {
+        Object.assign(p, { y: 118, surface: 'floor', desk: -1, plan: [], step: null });
+      }
+      if (!p.step) p.step = p.plan.shift() || null;
+      if (!p.step) {
+        p.plan = this.petPlan();
+        p.step = p.plan.shift();
+      }
+
+      const st = p.step;
+      if (st.do === 'walk') {
+        const dx = st.x - p.x, dy = st.y - p.y;
+        const dist = Math.hypot(dx, dy);
+        const move = st.speed * dt;
+        p.mode = st.speed > 30 ? 'run' : 'walk';
+        if (Math.abs(dx) > 0.5) p.dir = Math.sign(dx);
+        if (dist <= move) {
+          p.x = st.x;
+          p.y = st.y;
+          p.step = null;
+        } else {
+          p.x += (dx / dist) * move;
+          p.y += (dy / dist) * move;
+        }
+      } else if (st.do === 'jump') {
+        if (st.t === undefined) {
+          st.t = 0;
+          st.fx = p.x;
+          st.fy = p.y;
+          if (Math.abs(st.x - p.x) > 0.5) p.dir = Math.sign(st.x - p.x);
+        }
+        st.t = Math.min(1, st.t + dt / st.dur);
+        p.mode = 'jump';
+        p.x = st.fx + (st.x - st.fx) * st.t;
+        p.y = st.fy + (st.y - st.fy) * st.t - Math.sin(Math.PI * st.t) * st.h;
+        if (st.t >= 1) {
+          p.x = st.x;
+          p.y = st.y;
+          p.surface = st.surface;
+          p.desk = st.desk === undefined ? -1 : st.desk;
+          p.step = null;
+        }
+      } else if (st.do === 'rest') {
+        if (st.left === undefined) st.left = st.secs;
+        p.mode = st.mode;
+        if (st.face) p.dir = st.face;
+        st.left -= dt;
+        if (st.left <= 0) p.step = null;
+      }
+    }
+
+    // Chooses what the pet does next. It's a busy animal.
+    petPlan() {
+      const spot = () => ({ x: LEFT + 2 + Math.random() * (this.doorX() - LEFT - 22), y: 112 + Math.random() * 11 });
+      const desks = this.desks.map((id, i) => (id ? i : -1)).filter((i) => i >= 0);
+      const roll = Math.random();
+
+      if (roll < 0.3 && desks.length) {
+        // Climb onto a computer and nap on it for 10 seconds
+        const i = desks[Math.floor(Math.random() * desks.length)];
+        const cx = this.deskCenter(i);
+        return [
+          { do: 'walk', x: cx + 14, y: 113, speed: 20 },
+          { do: 'rest', mode: 'sit', secs: 0.5 },
+          { do: 'jump', x: cx + 14, y: DESK_Y, dur: 0.5, h: 10, surface: 'desk', desk: i },
+          { do: 'rest', mode: 'sit', secs: 0.8 },
+          { do: 'jump', x: cx - 6, y: MONITOR_TOP, dur: 0.4, h: 2, surface: 'monitor', desk: i },
+          { do: 'rest', mode: 'sit', secs: 1.5, face: 1 },
+          { do: 'rest', mode: 'sleep', secs: 10, face: 1 },
+          { do: 'rest', mode: 'sit', secs: 1.2 },
+          { do: 'jump', x: cx + 14, y: DESK_Y, dur: 0.4, h: 3, surface: 'desk', desk: i },
+          { do: 'jump', x: cx + 20 + Math.random() * 12, y: 114 + Math.random() * 8, dur: 0.55, h: 5, surface: 'floor' },
+        ];
+      }
+      if (roll < 0.55) {
+        return [{ do: 'walk', ...spot(), speed: 20 }, { do: 'rest', mode: 'sit', secs: 0.6 + Math.random() * 1.4 }];
+      }
+      if (roll < 0.75) {
+        // Zoomies!
+        return [
+          { do: 'walk', ...spot(), speed: 48 },
+          { do: 'walk', ...spot(), speed: 48 },
+          { do: 'walk', ...spot(), speed: 48 },
+          { do: 'rest', mode: 'sit', secs: 1.2 },
+        ];
+      }
+      if (roll < 0.92) {
+        return [{ do: 'walk', ...spot(), speed: 20 }, { do: 'walk', ...spot(), speed: 20 }, { do: 'rest', mode: 'sit', secs: 1 }];
+      }
+      return [{ do: 'rest', mode: 'sleep', secs: 3 + Math.random() * 4 }];
     }
 
     // Robot fully standing at the door (for the permission card)
@@ -216,6 +310,18 @@
       return i >= 0 && i < this.desks.length ? this.desks[i] : null;
     }
 
+    // Everything a style needs to know to draw the room
+    env(now, date) {
+      return {
+        W: this.width, H, WALL, FLOOR: WALL + 3, DESK_Y, LEFT, SLOT, RIGHT,
+        slots: Math.max(2, this.desks.length),
+        hue: this.room.hue, seed: this.seed, now, date, hour: date.getHours(),
+        sky: Themes.skyFor(date.getHours()),
+        doorX: this.doorX(),
+        deskCenter: (i) => this.deskCenter(i),
+      };
+    }
+
     // -------------------------------------------------------------------------
     // Drawing
     // -------------------------------------------------------------------------
@@ -224,40 +330,46 @@
       if (!this.room) return;
       const ctx = this.ctx;
       const date = window.roomClock ? window.roomClock() : new Date(); // demo mode can fix the time
-      const hour = date.getHours();
-      const hue = this.room.hue;
-      const W = this.width;
+      const { theme } = this.theme();
+      const e = this.env(now, date);
 
       ctx.imageSmoothingEnabled = false;
-      this.drawWall(ctx, W, hue);
-      this.drawWindows(ctx, now, hour);
-      this.drawClock(ctx, W - RIGHT + 26, 13, date);
-      this.drawFloor(ctx, W, hue);
+      theme.back(ctx, e);
+      theme.floor(ctx, e);
       const doorOpen = [...this.actors.values()].some((a) => a.goal === 'door' && a.mode === 'door');
-      this.drawDoor(ctx, doorOpen);
-      this.drawShelf(ctx);
+      theme.door(ctx, e, doorOpen);
+      theme.corner(ctx, e);
 
       // Desks (and seated robots)
-      const slots = Math.max(2, this.desks.length);
-      for (let i = 0; i < slots; i++) {
+      for (let i = 0; i < e.slots; i++) {
         const id = this.desks[i];
-        if (id) this.drawDesk(ctx, i, this.sessions[id], this.actors.get(id), now);
-        else this.drawSpare(ctx, i);
+        if (id) this.drawDesk(ctx, i, this.sessions[id], this.actors.get(id), now, theme, e);
+        else theme.spare(ctx, e, i);
       }
-      this.drawPlant(ctx);
+      theme.front(ctx, e);
 
-      // Walking / waiting-at-door robots, back to front
+      // Walking / waiting-at-door robots, back to front, then the pet
       const standing = [...this.actors.values()].filter((a) => a.mode !== 'seat').sort((a, b) => a.feet - b.feet);
       for (const a of standing) this.drawStanding(ctx, a, this.sessions[a.id], now);
-
-      // Night time: dim the room, then add the glowing screens back on top
-      const night = isNight(hour);
-      if (night) rect(ctx, 0, 0, W, H, 'rgba(10, 12, 40, 0.38)');
+      if (this.pet) {
+        if (theme.pet === 'drone') Themes.drawDrone(ctx, this.pet, e, theme.petLight);
+        else Themes.drawCat(ctx, this.pet, e);
+      }
       for (let i = 0; i < this.desks.length; i++) {
         const id = this.desks[i];
-        if (id) this.drawScreen(ctx, i, this.sessions[id], this.actors.get(id), now, night);
+        if (id) this.drawPlate(ctx, i, this.sessions[id], now);
       }
-      this.drawBulbs(ctx, now, night);
+      Themes.vignette(ctx, e);
+
+      // Night time: dim the room, then add the lights and glowing screens on top
+      const dark = e.sky.night && theme.dim > 0;
+      if (dark) rect(ctx, 0, 0, e.W, H, `rgba(10, 12, 40, ${theme.dim})`);
+      theme.light(ctx, e);
+      for (let i = 0; i < this.desks.length; i++) {
+        const id = this.desks[i];
+        if (id) this.drawScreen(ctx, i, this.sessions[id], now, dark || theme.dim === 0);
+      }
+      this.drawBulbs(ctx, now, dark);
 
       // Speech bubbles on top of everything
       for (let i = 0; i < this.desks.length; i++) {
@@ -266,165 +378,8 @@
       }
     }
 
-    drawWall(ctx, W, hue) {
-      rect(ctx, 0, 0, W, WALL, `hsl(${hue} 20% 29%)`);
-      for (let x = 2; x < W; x += 8) rect(ctx, x, 3, 3, WALL - 3, `hsl(${hue} 20% 31%)`); // wallpaper stripes
-      rect(ctx, 0, 0, W, 3, `hsl(${hue} 22% 20%)`);                                        // top trim
-      rect(ctx, 0, WALL - 1, W, 1, `hsl(${hue} 18% 24%)`);
-      rect(ctx, 0, WALL, W, 3, `hsl(${hue} 18% 15%)`);                                     // skirting board
-      rect(ctx, 0, WALL, W, 1, `hsl(${hue} 18% 26%)`);
-    }
-
-    drawFloor(ctx, W, hue) {
-      const top = WALL + 3;
-      const kind = this.seed % 3;
-      if (kind === 0) {
-        // Wooden planks
-        for (let y = top, row = 0; y < H; y += 7, row++) {
-          rect(ctx, 0, y, W, 7, row % 2 ? '#654635' : '#6c4b39');
-          rect(ctx, 0, y + 6, W, 1, '#4b3226');
-          for (let x = (row * 23) % 44; x < W; x += 44) rect(ctx, x, y, 1, 6, '#523727');
-        }
-      } else if (kind === 1) {
-        // Tiles
-        for (let y = top, row = 0; y < H; y += 8, row++) {
-          for (let x = 0, col = 0; x < W; x += 8, col++) rect(ctx, x, y, 8, 8, (row + col) % 2 ? '#3b4260' : '#434b6b');
-        }
-      } else {
-        // Carpet
-        rect(ctx, 0, top, W, H - top, `hsl(${(hue + 180) % 360} 18% 27%)`);
-        const r = rng(this.seed);
-        for (let i = 0; i < W * 0.8; i++) rect(ctx, Math.floor(r() * W), top + Math.floor(r() * (H - top)), 1, 1, `hsl(${(hue + 180) % 360} 18% 32%)`);
-      }
-      rect(ctx, 0, top, W, 2, 'rgba(0,0,0,0.25)'); // shadow where floor meets wall
-    }
-
-    drawWindows(ctx, now, hour) {
-      const [top, bottom] = skyColors(hour);
-      const slots = Math.max(2, this.desks.length);
-      for (let i = 0; i < slots; i += 2) {
-        const x = this.deskCenter(i) + SLOT / 2 - 14;
-        const y = 8;
-        const w = 28, h = 20;
-        rect(ctx, x - 1, y - 1, w + 2, h + 2, '#1b1622');
-        rect(ctx, x, y, w, h, '#8a6a4a');
-        rect(ctx, x + 2, y + 2, w - 4, (h - 4) / 2, top);
-        rect(ctx, x + 2, y + 2 + (h - 4) / 2, w - 4, (h - 4) / 2, bottom);
-        if (isNight(hour)) {
-          const r = rng(this.seed + i);
-          for (let k = 0; k < 5; k++) {
-            const sx = x + 3 + Math.floor(r() * (w - 6)), sy = y + 3 + Math.floor(r() * 7);
-            if (Math.sin(now / 700 + k * 2 + i) > -0.6) rect(ctx, sx, sy, 1, 1, '#f5f1c8');
-          }
-          rect(ctx, x + w - 9, y + 4, 3, 3, '#f1ecc4'); // moon
-        } else {
-          // A cloud drifting past
-          const cx = x + 2 + ((now / 1000) * 1.5 + this.seed % 40 + i * 13) % (w + 6) - 6;
-          ctx.save();
-          ctx.beginPath();
-          ctx.rect(x + 2, y + 2, w - 4, h - 4);
-          ctx.clip();
-          rect(ctx, cx, y + 6, 7, 2, 'rgba(255,255,255,0.85)');
-          rect(ctx, cx + 2, y + 5, 3, 1, 'rgba(255,255,255,0.85)');
-          ctx.restore();
-        }
-        rect(ctx, x + w / 2 - 1, y, 2, h, '#8a6a4a');       // window bars
-        rect(ctx, x, y + h / 2 - 1, w, 2, '#8a6a4a');
-        rect(ctx, x - 2, y + h, w + 4, 2, '#a07d58');       // sill
-      }
-      // A poster above every other desk
-      const r = rng(this.seed * 3);
-      for (let i = 1; i < slots; i += 2) {
-        const x = this.deskCenter(i) + SLOT / 2 - 9;
-        const y = 10;
-        const c = `hsl(${Math.floor(r() * 360)} 45% 55%)`;
-        rect(ctx, x - 1, y - 1, 16, 20, '#15161f');
-        rect(ctx, x, y, 14, 18, '#e9e3d0');
-        rect(ctx, x + 2, y + 2, 10, 9, c);
-        rect(ctx, x + 5, y + 4, 4, 4, '#e9e3d0');
-        rect(ctx, x + 2, y + 13, 10, 1, '#9a9486');
-        rect(ctx, x + 2, y + 15, 7, 1, '#9a9486');
-      }
-    }
-
-    drawClock(ctx, cx, cy, date) {
-      const R = 5;
-      for (let y = -R - 1; y <= R + 1; y++) {
-        for (let x = -R - 1; x <= R + 1; x++) {
-          const d = Math.hypot(x, y);
-          if (d <= R + 1.2) rect(ctx, cx + x, cy + y, 1, 1, d > R ? '#15161f' : '#ece6d4');
-        }
-      }
-      const m = date.getMinutes(), h = (date.getHours() % 12) + m / 60;
-      const ma = (m / 60) * Math.PI * 2, ha = (h / 12) * Math.PI * 2;
-      line(ctx, cx, cy, cx + Math.round(Math.sin(ma) * 4), cy - Math.round(Math.cos(ma) * 4), '#2b2d3c');
-      line(ctx, cx, cy, cx + Math.round(Math.sin(ha) * 2.6), cy - Math.round(Math.cos(ha) * 2.6), '#c0392b');
-    }
-
-    drawDoor(ctx, open) {
-      const x = this.doorX(), y = 34, w = 22, h = WALL - 34 + 1;
-      // EXIT sign
-      rect(ctx, x + 2, y - 9, 18, 7, '#15161f');
-      rect(ctx, x + 3, y - 8, 16, 5, '#1f9a57');
-      text(ctx, 'EXIT', x + 4, y - 8, '#e9fff1');
-      // Frame
-      rect(ctx, x - 2, y - 2, w + 4, h + 2, '#241c2c');
-      if (open) {
-        rect(ctx, x, y, w, h, '#f6e7a6');                 // light from outside
-        rect(ctx, x, y, 12, h, '#7a5238');                // door swung open
-        rect(ctx, x + 2, y + 3, 8, 12, '#6a4530');
-        rect(ctx, x + 2, y + 19, 8, 13, '#6a4530');
-        ctx.fillStyle = 'rgba(246,231,166,0.18)';          // light spilling onto the floor
-        ctx.fillRect(x + 12, WALL + 3, 12, 14);
-      } else {
-        rect(ctx, x, y, w, h, '#7a5238');
-        rect(ctx, x + 3, y + 3, w - 6, 12, '#6a4530');
-        rect(ctx, x + 3, y + 19, w - 6, 13, '#6a4530');
-        rect(ctx, x + w - 5, y + 18, 2, 2, '#e8c14a');    // door knob
-      }
-    }
-
-    drawShelf(ctx) {
-      const x = 4, y = 30, w = 24, h = WALL - 30;
-      rect(ctx, x - 1, y - 1, w + 2, h + 1, '#15161f');
-      rect(ctx, x, y, w, h, '#5a3f2b');
-      const r = rng(this.seed * 7);
-      for (let s = 0; s < 3; s++) {
-        const sy = y + 2 + s * 13;
-        rect(ctx, x + 1, sy, w - 2, 10, '#3a281c');
-        let bx = x + 2;
-        while (bx < x + w - 4) {
-          const bw = 2 + Math.floor(r() * 2), bh = 6 + Math.floor(r() * 4);
-          rect(ctx, bx, sy + 10 - bh, bw, bh, `hsl(${Math.floor(r() * 360)} 40% ${40 + Math.floor(r() * 20)}%)`);
-          bx += bw + (r() < 0.25 ? 1 : 0);
-        }
-        rect(ctx, x, sy + 10, w, 2, '#6d4d35');
-      }
-    }
-
-    drawPlant(ctx) {
-      const x = 6, y = 104;
-      rect(ctx, x, y, 14, 12, '#15161f');
-      rect(ctx, x + 1, y + 1, 12, 10, '#b5653f');
-      rect(ctx, x + 1, y + 1, 12, 2, '#cc7a52');
-      const leaves = [[7, -14], [3, -10], [11, -11], [5, -6], [9, -5], [1, -4], [13, -6]];
-      for (const [lx, ly] of leaves) {
-        rect(ctx, x + lx - 1, y + ly, 3, 5, '#2f7a45');
-        rect(ctx, x + lx, y + ly + 1, 1, 3, '#49a862');
-      }
-    }
-
-    // An unused desk slot gets a water cooler
-    drawSpare(ctx, i) {
-      const cx = this.deskCenter(i);
-      rect(ctx, cx - 6, 64, 12, 30, '#15161f');
-      rect(ctx, cx - 5, 76, 10, 17, '#d7dbe6');
-      rect(ctx, cx - 4, 65, 8, 11, '#7cc3ee');
-      rect(ctx, cx - 3, 67, 2, 6, '#b4e1fb');
-      rect(ctx, cx - 1, 80, 3, 2, '#3a3e55');
-    }
-
-    drawDesk(ctx, i, s, actor, now) {
+    drawDesk(ctx, i, s, actor, now, theme, e) {
+      const f = theme.furniture;
       const cx = this.deskCenter(i);
       const mx = cx - 13, my = DESK_Y - 22;
       const on = s && !(s.state === 'idle' && !s.alive);
@@ -440,80 +395,67 @@
         ctx.globalAlpha = 1;
       }
 
-      // Name plate on the wall, with a status light
-      if (s) {
-        const label = s.name;
-        const tw = textWidth(label) + 9;
-        const px = Math.round(cx - tw / 2), py = my - 11;
-        const hot = this.selected === s.id || this.hover === s.id;
-        rect(ctx, px - 1, py - 1, tw + 2, 9, hot ? '#ffffff' : '#0e0f16');
-        rect(ctx, px, py, tw, 7, '#1d1f2e');
-        rect(ctx, px + 2, py + 2, 2, 3, light);
-        text(ctx, label, px + 6, py + 1, '#d9dcef');
-        if (this.selected === s.id) {
-          const bob = Math.floor(now / 300) % 2;
-          rect(ctx, cx - 2, py - 6 + bob, 5, 1, '#ffffff');
-          rect(ctx, cx - 1, py - 5 + bob, 3, 1, '#ffffff');
-          rect(ctx, cx, py - 4 + bob, 1, 1, '#ffffff');
-        }
-      }
-
       // Monitor
       rect(ctx, mx - 1, my - 1, 28, 19, '#0e0f16');
-      rect(ctx, mx, my, 26, 17, '#2a2d42');
-      rect(ctx, mx + 1, my + 1, 24, 15, '#1c1e2d');
+      rect(ctx, mx, my, 26, 17, f.monitor);
+      rect(ctx, mx, my, 26, 1, 'rgba(255,255,255,0.12)');
+      rect(ctx, mx + 1, my + 1, 24, 15, f.bezel);
       rect(ctx, mx + 2, my + 2, 22, 13, on ? '#0b0d15' : '#08090e');
       rect(ctx, mx + 22, my + 15, 2, 1, on ? light : '#3a3e55'); // power light
-      rect(ctx, cx - 2, my + 17, 4, 3, '#3a3e55');                // stand
-      rect(ctx, cx - 6, my + 20, 12, 2, '#2a2d42');
+      rect(ctx, cx - 2, my + 17, 4, 3, f.stand);
+      rect(ctx, cx - 6, my + 20, 12, 2, f.monitor);
 
       // Desk
       const dx = cx - 26;
+      ctx.globalAlpha = 0.25;
+      rect(ctx, dx - 1, DESK_Y + 20, 54, 2, '#000'); // shadow on the floor
+      ctx.globalAlpha = 1;
       rect(ctx, dx - 1, DESK_Y - 1, 54, 19, '#15161f');
-      rect(ctx, dx, DESK_Y, 52, 3, '#9c7650');
-      rect(ctx, dx, DESK_Y, 52, 1, '#b89066');
-      rect(ctx, dx, DESK_Y + 3, 52, 13, '#7d5b3d');
-      rect(ctx, dx + 3, DESK_Y + 5, 14, 4, '#6d4f34');
-      rect(ctx, dx + 3, DESK_Y + 10, 14, 4, '#6d4f34');
-      rect(ctx, dx + 9, DESK_Y + 7, 2, 1, '#caa46a');
-      rect(ctx, dx + 9, DESK_Y + 12, 2, 1, '#caa46a');
-      rect(ctx, dx + 1, DESK_Y + 16, 3, 4, '#5a4029');
-      rect(ctx, dx + 48, DESK_Y + 16, 3, 4, '#5a4029');
-      rect(ctx, dx, DESK_Y + 20, 52, 1, 'rgba(0,0,0,0.25)');
-
-      // Mug (steams while working) and a paper stack
-      const r = rng(this.seed + i * 31);
-      if (r() < 0.8) {
-        rect(ctx, cx + 16, DESK_Y - 5, 5, 5, '#15161f');
-        rect(ctx, cx + 17, DESK_Y - 4, 3, 4, ['#e0e0e0', '#d65b5b', '#5b8fd6', '#e8c14a'][Math.floor(r() * 4)]);
-        rect(ctx, cx + 21, DESK_Y - 3, 1, 2, '#15161f');
-        if (s && s.state === 'working') {
-          const t = Math.floor(now / 250) % 3;
-          ctx.globalAlpha = 0.6;
-          rect(ctx, cx + 18 + (t === 1 ? 1 : 0), DESK_Y - 7 - t, 1, 1, '#ffffff');
-          ctx.globalAlpha = 1;
-        }
-      }
-      if (r() < 0.6) {
-        rect(ctx, cx - 23, DESK_Y - 2, 8, 2, '#15161f');
-        rect(ctx, cx - 22, DESK_Y - 2, 6, 1, '#f1efe6');
-        rect(ctx, cx - 23, DESK_Y - 1, 8, 1, '#dcd8c8');
-      }
+      rect(ctx, dx, DESK_Y, 52, 3, f.top);
+      rect(ctx, dx, DESK_Y, 52, 1, f.edge);
+      rect(ctx, dx, DESK_Y + 3, 52, 13, f.front);
+      rect(ctx, dx + 3, DESK_Y + 5, 14, 4, f.panel);
+      rect(ctx, dx + 3, DESK_Y + 10, 14, 4, f.panel);
+      rect(ctx, dx + 9, DESK_Y + 7, 2, 1, f.knob);
+      rect(ctx, dx + 9, DESK_Y + 12, 2, 1, f.knob);
+      rect(ctx, dx + 1, DESK_Y + 16, 3, 4, f.leg);
+      rect(ctx, dx + 48, DESK_Y + 16, 3, 4, f.leg);
+      theme.extras(ctx, e, cx, s, i);
 
       // Robot in its chair (if it's at the desk)
       const seated = !actor || actor.mode === 'seat';
       const rx = cx - 7, ry = DESK_Y - 1;
       if (!seated) {
-        this.drawChair(ctx, cx, true);
+        this.drawChair(ctx, cx, true, f);
         return;
       }
       const facingYou = s && (s.state === 'waiting' || s.state === 'blocked');
       if (facingYou) {
-        this.drawChair(ctx, cx, false);
+        this.drawChair(ctx, cx, false, f);
         drawRobot(ctx, this.frontPose(s, now), rx + this.shake(s, now), ry, s.hue, light);
       } else {
         drawRobot(ctx, this.backPose(s, now), rx, ry, s ? s.hue : 220, light);
-        this.drawChair(ctx, cx, true);
+        this.drawChair(ctx, cx, true, f);
+      }
+    }
+
+    // Name plate on the wall above the monitor, with a status light.
+    // Drawn after the pet, so the pet can never cover a robot's name.
+    drawPlate(ctx, i, s, now) {
+      const cx = this.deskCenter(i);
+      const label = s.name;
+      const tw = textWidth(label) + 9;
+      const px = Math.round(cx - tw / 2), py = PLATE_Y;
+      const hot = this.selected === s.id || this.hover === s.id;
+      rect(ctx, px - 1, py - 1, tw + 2, 9, hot ? '#ffffff' : '#0e0f16');
+      rect(ctx, px, py, tw, 7, '#1d1f2e');
+      rect(ctx, px + 2, py + 2, 2, 3, lightFor(s, now));
+      text(ctx, label, px + 6, py + 1, '#d9dcef');
+      if (this.selected === s.id) {
+        const bob = Math.floor(now / 300) % 2;
+        rect(ctx, cx - 2, py - 6 + bob, 5, 1, '#ffffff');
+        rect(ctx, cx - 1, py - 5 + bob, 3, 1, '#ffffff');
+        rect(ctx, cx, py - 4 + bob, 1, 1, '#ffffff');
       }
     }
 
@@ -536,18 +478,21 @@
     }
 
     // Office chair; from behind (back = true) you see the backrest
-    drawChair(ctx, cx, back) {
+    drawChair(ctx, cx, back, f) {
       const x = cx - 7, y = DESK_Y + 15; // low enough that the robot's back light shows
+      ctx.globalAlpha = 0.25;
+      rect(ctx, cx - 7, y + 13, 15, 1, '#000');
+      ctx.globalAlpha = 1;
       if (back) {
         rect(ctx, x, y, 15, 7, '#15161f');
-        rect(ctx, x + 1, y + 1, 13, 5, '#3b3350');
-        rect(ctx, x + 2, y + 1, 11, 1, '#4d4468');
+        rect(ctx, x + 1, y + 1, 13, 5, f.chair);
+        rect(ctx, x + 2, y + 1, 11, 1, f.chairLight);
       } else {
         rect(ctx, x + 1, y + 2, 13, 5, '#15161f');
-        rect(ctx, x + 2, y + 3, 11, 3, '#2a2439');
+        rect(ctx, x + 2, y + 3, 11, 3, f.chairSeat);
       }
-      rect(ctx, cx - 1, y + 7, 3, 4, '#2a2d42');
-      rect(ctx, cx - 6, y + 11, 13, 1, '#2a2d42');
+      rect(ctx, cx - 1, y + 7, 3, 4, f.base);
+      rect(ctx, cx - 6, y + 11, 13, 1, f.base);
       rect(ctx, cx - 6, y + 12, 2, 1, '#15161f');
       rect(ctx, cx, y + 12, 1, 1, '#15161f');
       rect(ctx, cx + 5, y + 12, 2, 1, '#15161f');
@@ -556,7 +501,9 @@
     drawStanding(ctx, a, s, now) {
       const light = lightFor(s, now);
       const x = Math.round(a.x), y = Math.round(a.feet) - 22;
-      rect(ctx, x + 2, Math.round(a.feet), 11, 1, 'rgba(0,0,0,0.3)'); // shadow
+      ctx.globalAlpha = 0.3;
+      rect(ctx, x + 2, Math.round(a.feet), 11, 1, '#000'); // shadow
+      ctx.globalAlpha = 1;
       let pose = 'front';
       if (a.mode === 'walk') pose = Math.floor(now / 140) % 2 ? 'walkL' : 'walkR';
       else if ((now + (s ? s.hue : 0) * 20) % 3000 > 2850) pose = 'frontBlink';
@@ -564,7 +511,7 @@
     }
 
     // The monitor picture: code, "YOUR TURN", "ALLOW?", or dark
-    drawScreen(ctx, i, s, actor, now, night) {
+    drawScreen(ctx, i, s, now, glowing) {
       const cx = this.deskCenter(i);
       const sx = cx - 11, sy = DESK_Y - 20, w = 22, h = 13;
       if (!s) return;
@@ -612,7 +559,7 @@
         rect(ctx, sx + 3, sy + 1, 1, 4, '#151827'); // reflection on a switched-off screen
         rect(ctx, sx + 5, sy + 1, 1, 2, '#151827');
       }
-      if (night && s.state !== 'idle') {
+      if (glowing && s.state !== 'idle') {
         ctx.globalAlpha = 0.12;
         rect(ctx, sx - 8, sy - 6, w + 16, h + 26, STATE_COLORS[s.state]);
         ctx.globalAlpha = 1;

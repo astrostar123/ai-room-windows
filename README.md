@@ -54,12 +54,24 @@ To stop it: ⚙ → **Quit AI Room**. If something seems wrong, check
 
 Amber turns grey when you click the robot, or press **All seen**.
 
+## Room styles
+
+![A space station room with round windows and an airlock next to a cozy office at night with hanging lamps.](docs/styles.png)
+
+There are four styles: **Cozy office**, **Neon city**, **Space station** and
+**Forest cabin**. By default every room gets its own. To change all of them, go
+to ⚙ → **Room style**. To change just one room, use its **Style** button.
+
+The windows follow the real time of day: sunny in the afternoon, stars and snow
+at night. Every room has a pet, a cat or a little hover-drone, that wanders
+around and takes naps.
+
 ## Things you can do
 
 - **Click a robot** (or its row) to read the conversation.
 - **Allow / Deny** at the door. "Ask in the app instead" sends the question back.
 - **Stop**: the robot stops at its next step.
-- **Reply** to a session that isn't open anywhere else. It continues in the
+- **Reply** to any robot that isn't busy. The conversation continues in the
   background with `claude -p --resume`.
 - **+ Robot** starts a new background session in that folder with a task you type.
 - **Terminal** opens Windows Terminal running `claude` in that folder.
@@ -69,8 +81,10 @@ Amber turns grey when you click the robot, or press **All seen**.
 
 ## Honest limits
 
-- **Reply only works for sessions that are closed.** The Room can't type into
-  the Claude app or a terminal window, so reply there for open sessions.
+- **Replying to a chat that's open in the Claude app or a terminal** runs the
+  reply in the Room. That window can't be typed into from outside, so it won't
+  show the new messages until you close and reopen the chat there. The Room
+  asks you once before doing this. You can't reply while a robot is busy.
 - **Reply and + Robot need the terminal `claude` signed in.** The Claude
   desktop app has its own login. Open a terminal, run `claude`, and type `/login`.
 - **Permission questions only come to the Room while its window is on screen.**
@@ -113,7 +127,8 @@ No npm packages. Needs Node.js 18 or newer.
 | `lib/hooks-setup.js` | Adds/removes the hooks in `settings.json` |
 | `hook.js` | What Claude Code runs for each hook event |
 | `mcp-approve.js` | Tiny MCP tool so background robots can ask for permission |
-| `public/room.js` | Draws a room (pixel art on a canvas) |
+| `public/room.js` | Draws the desks, robots and screens, and moves robots and pets around |
+| `public/themes.js` | The four room styles: walls, floors, windows, doors, decorations |
 | `public/sprites.js` | Robot sprites and the 3×5 pixel font |
 | `public/app.js` | The page: rooms, side panel, dialogs, sounds, demo mode |
 | `tools/make-icon.js` | Draws `ai-room.ico` (the robot head icon) |

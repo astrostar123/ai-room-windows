@@ -418,6 +418,16 @@ textarea, input[type="text"], input[type="number"], input:not([type]) {
   font: 13.5px/1.4 var(--ui);
 }
 textarea { resize: vertical; min-height: 64px; }
+select {
+  width: 100%;
+  padding: 7px 8px;
+  background: #0b0c16;
+  color: var(--text);
+  border: 2px solid var(--line);
+  border-radius: 0;
+  font: 13.5px var(--ui);
+}
+select:focus { outline: none; border-color: var(--accent); }
 textarea:focus, input:focus { outline: none; border-color: var(--accent); }
 textarea:disabled { opacity: 0.5; }
 .panel-actions { display: flex; gap: 8px; align-items: center; }

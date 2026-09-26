@@ -24,9 +24,27 @@ const { PORT, ROOM_DIR, APP_DIR, settings } = config;
 const PUBLIC_DIR = path.join(APP_DIR, 'public');
 const SERVER_FILE = path.join(ROOM_DIR, 'server.json');
 const SEEN_FILE = path.join(ROOM_DIR, 'seen.json');
-const TOKEN = crypto.randomBytes(24).toString('hex');
+// The secret the Room page uses. It's kept between restarts so open Room
+// windows can reconnect by themselves.
+const TOKEN = (() => {
+  const file = path.join(ROOM_DIR, 'token.json');
+  const saved = config.readJson(file, null);
+  if (saved && /^[0-9a-f]{48}$/.test(saved.token)) return saved.token;
+  const token = crypto.randomBytes(24).toString('hex');
+  try { config.writeJson(file, { token }); } catch { /* a new one next time, that's fine */ }
+  return token;
+})();
 const ROOM_URL = `http://127.0.0.1:${PORT}/`;
 const LOG_FILE = path.join(ROOM_DIR, 'server.log');
+
+// Changes whenever the page's files change, so open Room windows know to reload
+const BUILD_ID = (() => {
+  try {
+    return String(Math.max(...fs.readdirSync(path.join(APP_DIR, 'public')).map((f) => fs.statSync(path.join(APP_DIR, 'public', f)).mtimeMs)));
+  } catch {
+    return String(Date.now());
+  }
+})();
 
 // ---------------------------------------------------------------------------
 // Background mode
@@ -91,6 +109,7 @@ function buildState() {
     cli: { found: runner.cli.found, loggedIn: runner.cli.loggedIn, error: runner.cli.error },
     presence: { windows: clients.size, onScreen: visibleClients() },
     settings,
+    buildId: BUILD_ID,
   };
 }
 
@@ -434,7 +453,10 @@ async function handle(req, res) {
       const text = String(body.text || '').trim();
       if (!s) return sendJson(res, { error: 'Unknown session' }, 404);
       if (!text) return sendJson(res, { error: 'Type a message first.' }, 400);
-      if (!s.canReply) return sendJson(res, { error: `This session is open in the ${s.where}. Reply there.` }, 409);
+      if (!s.canReply) {
+        const why = s.busy ? 'It is busy right now. You can reply when it has finished.' : 'Replying needs the claude command signed in.';
+        return sendJson(res, { error: why }, 409);
+      }
       try {
         seen[id] = Date.now();
         return sendJson(res, { ok: true, ...startRun({ cwd: s.cwd, text, resumeId: id }) });
