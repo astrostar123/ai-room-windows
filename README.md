@@ -54,12 +54,22 @@ full of robots.
 1. Double-click **`Start AI Room.command`**. A Terminal window flashes up, AI
    Room starts in the background, and the Room opens (in its own window if you
    have Chrome, Edge or Brave, otherwise in your normal browser).
-   - If macOS says it *can't be opened*, right-click the file → **Open** →
-     **Open**. You only need to do that once.
-   - Or in Terminal, in this folder: `node server.js --background --open`
-2. Optional: drag `Start AI Room.command` to the right side of your Dock to keep
+2. **The first time, macOS may block it.** Files downloaded in a browser get
+   checked, and this one isn't signed by an Apple developer. It's a short text
+   file, so you can open it in TextEdit and read every line first. To allow it
+   once:
+   - **macOS 15 (Sequoia) or newer:** double-click it, click **Done**, then open
+     **System Settings → Privacy & Security**, scroll down and click
+     **Open Anyway** next to "Start AI Room.command".
+   - **macOS 14 or older:** right-click the file → **Open** → **Open**.
+   - **Or skip the file:** open **Terminal**, type `cd ` (with a space), drag
+     the AI Room folder onto the Terminal window, press **Enter**, then run
+     `node server.js --background --open`.
+
+   If you got AI Room with `git clone`, macOS doesn't block it.
+3. Optional: drag `Start AI Room.command` to the right side of your Dock to keep
    it handy.
-3. The first time you use **Terminal** in the Room or delete a chat's history,
+4. The first time you use **Terminal** in the Room or delete a chat's history,
    macOS asks whether AI Room may control Terminal or Finder. Click **OK**.
 
 ### Both
